@@ -306,9 +306,18 @@ async function findOffers(document) {
 function findOffersFromDocument(document) {
     console.log('[Scrape] Extracting offers from movie detail page...');
 
-    const offersNode = findTagWithClass(document, "buybox__content inline");
-    if (!offersNode) {
-        console.error('[Scrape] ✗ No buybox__content inline node in movie detail page');
+    // Analyze the movie detail page structure
+    const nodeStats = analyzeDocumentStructure(document);
+    console.log(`[Scrape] Movie page stats: ${nodeStats.totalNodes} total nodes, ${nodeStats.nodesWithClasses} with classes`);
+    console.log(`[Scrape] Movie page sample classes:`, nodeStats.classNames.slice(0, 30));
+
+    // Movie detail pages use a different structure with "offer" elements
+    // Look for all offer containers
+    const allOfferElements = findAllNodesWithClass(document, "offer");
+    console.log(`[Scrape] Found ${allOfferElements.length} offer elements`);
+
+    if (allOfferElements.length === 0) {
+        console.warn('[Scrape] ⚠️  No offers found on movie detail page');
         return [
             { categoryName: "stream", offers: [] },
             { categoryName: "rent", offers: [] },
@@ -316,18 +325,111 @@ function findOffersFromDocument(document) {
         ];
     }
 
-    const stream = findOffersInCategory(offersNode, "stream");
-    const rent = findOffersInCategory(offersNode, "rent");
-    const buy = findOffersInCategory(offersNode, "buy");
+    // Parse all offers
+    const parsedOffers = [];
+    for (const offerElement of allOfferElements) {
+        try {
+            const offer = parseOfferElement(offerElement);
+            if (offer) {
+                parsedOffers.push(offer);
+                console.log(`[Scrape] Parsed offer: ${offer.name} - ${offer.price}`);
+            }
+        } catch (error) {
+            console.error('[Scrape] Error parsing offer element:', error);
+        }
+    }
 
-    const totalOffers = stream.length + rent.length + buy.length;
-    console.log(`[Scrape] ✓ Extracted ${totalOffers} total offers (stream: ${stream.length}, rent: ${rent.length}, buy: ${buy.length})`);
+    console.log(`[Scrape] ✓ Extracted ${parsedOffers.length} total offers`);
 
+    // For now, return all offers under "stream" category
+    // TODO: Categorize by stream/rent/buy based on price patterns
     return [
-        { categoryName: "stream", offers: stream },
-        { categoryName: "rent", offers: rent },
-        { categoryName: "buy", offers: buy }
+        { categoryName: "stream", offers: parsedOffers },
+        { categoryName: "rent", offers: [] },
+        { categoryName: "buy", offers: [] }
     ];
+}
+
+// Parse a single offer element from the new JustWatch structure
+function parseOfferElement(offerElement) {
+    try {
+        // Find the provider image
+        const images = findAllTags(offerElement, "img");
+        if (images.length === 0) {
+            console.warn('[Scrape] No image found in offer element');
+            return null;
+        }
+
+        const image = images[0];
+        const nameAttr = image.attrs?.find(attr => attr.name === "alt");
+        const srcAttr = image.attrs?.find(attr => attr.name === "src");
+
+        if (!nameAttr || !srcAttr) {
+            console.warn('[Scrape] Image missing alt or src attribute');
+            return null;
+        }
+
+        const name = nameAttr.value;
+        const imageSrc = srcAttr.value;
+
+        // Find the price - look for offer__label__price
+        const priceNode = findTagWithClass(offerElement, "offer__label__price");
+        let price = "Available";
+        if (priceNode) {
+            const priceText = getFirstText(priceNode);
+            if (priceText && priceText.trim()) {
+                price = priceText.trim();
+            }
+        }
+
+        // Find the URL - look for offer__cta link
+        const links = findAllTags(offerElement, "a");
+        let url = "#";
+        for (const link of links) {
+            const hrefAttr = link.attrs?.find(attr => attr.name === "href");
+            if (hrefAttr && hrefAttr.value) {
+                url = hrefAttr.value;
+                break;
+            }
+        }
+
+        return {
+            name: name,
+            imageSrc: imageSrc,
+            price: price,
+            url: url
+        };
+    } catch (error) {
+        console.error('[Scrape] Error in parseOfferElement:', error);
+        return null;
+    }
+}
+
+// Find all nodes with a specific class (not just the first one)
+function findAllNodesWithClass(node, className) {
+    const results = [];
+
+    function traverse(n) {
+        if (!n) return;
+
+        // Check if current node has the class
+        if (n.attrs && Array.isArray(n.attrs)) {
+            const classAttr = n.attrs.find(attr => attr.name === "class");
+            if (classAttr && classAttr.value === className) {
+                results.push(n);
+            }
+        }
+
+        // Recurse into children
+        if (n.childNodes && n.childNodes.length > 0) {
+            for (const child of n.childNodes) {
+                traverse(child);
+            }
+        }
+    }
+
+    traverse(node);
+    return results;
 }
 
 // Extract the URL of the first search result from a search results page
