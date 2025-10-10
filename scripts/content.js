@@ -134,7 +134,6 @@ function afterDOMLoaded() {
 
         title.addEventListener('mouseenter', (event) => {
             lastCursorPosition = { x: event.clientX, y: event.clientY };
-            console.log('IMDB W2W: Mouse enter - cursor at', lastCursorPosition);
             showLoadingSpinner(event);
             showGlobalPopup(title);
         });
@@ -344,8 +343,6 @@ function showGlobalPopup(title) {
     const initialLeft = lastCursorPosition.x + scrollX;
     const initialTop = lastCursorPosition.y + scrollY;
 
-    console.log('IMDB W2W: Initial popup position - left:', initialLeft, 'top:', initialTop, '(cursor:', lastCursorPosition, 'scroll:', {scrollX, scrollY}, ')');
-
     globalPopup.style.left = initialLeft + 'px';
     globalPopup.style.top = initialTop + 'px';
 
@@ -368,9 +365,12 @@ function showGlobalPopup(title) {
 
     // If title extraction failed, abort
     if (!movieTitle) {
+        console.warn('IMDB W2W: Title extraction failed for element:', title);
         hideLoadingSpinner();
         return;
     }
+
+    console.log('IMDB W2W: Extracted title:', movieTitle, '- sending to background script');
 
     // Send a request to background script for this movie title
     try {
@@ -462,8 +462,6 @@ function adjustPopupPosition() {
     const viewportHeight = window.innerHeight;
     const viewportWidth = window.innerWidth;
 
-    console.log('IMDB W2W: Adjusting popup position - cursor:', {cursorX, cursorY}, 'popup size:', {width: popupRect.width, height: popupRect.height}, 'viewport:', {viewportWidth, viewportHeight});
-
     // Position popup with bottom-left corner at cursor
     let newLeft = cursorX + scrollX;
     let newTop = cursorY + scrollY - popupRect.height;
@@ -490,8 +488,6 @@ function adjustPopupPosition() {
     if (newLeft < scrollX + 10) {
         newLeft = scrollX + 10;
     }
-
-    console.log('IMDB W2W: Final popup position - left:', newLeft, 'top:', newTop);
 
     globalPopup.style.left = newLeft + 'px';
     globalPopup.style.top = newTop + 'px';
