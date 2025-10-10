@@ -226,6 +226,11 @@ function extractMovieTitle(titleElement) {
             movieTitle = movieTitle.replace(/^\d+\.\s+/, '');
         }
 
+        // Remove genre keywords FIRST (before year extraction)
+        // Common genres found in IMDB upcoming releases - they appear AFTER the year like "Movie (2025) Action"
+        const genrePattern = /\s+(Action|Adventure|Animation|Biography|Comedy|Crime|Documentary|Drama|Family|Fantasy|Film-Noir|History|Horror|Music|Musical|Mystery|Romance|Sci-Fi|Short|Sport|Thriller|War|Western)(\s+\w+)*$/;
+        movieTitle = movieTitle.replace(genrePattern, '').trim();
+
         let year = '';
 
         // If year selector is null, try to extract year from title text itself
