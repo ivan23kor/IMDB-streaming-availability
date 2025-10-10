@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Chrome browser extension called "IMDB W2W: IMDB Where to Watch" that enhances IMDB pages by displaying streaming service information. When users hover over movie titles on IMDB, the extension shows available streaming options with prices and provider icons via a floating popup.
+This is a Chrome browser extension called "JustWatch on IMDB" that enhances IMDB pages by displaying streaming service information. When users hover over movie titles on IMDB, the extension shows available streaming options with prices and provider icons via a floating popup.
 
 ## Development Workflow
 

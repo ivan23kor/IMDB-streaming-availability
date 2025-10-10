@@ -1,7 +1,7 @@
 {
-  "name": "IMDb Streaming Availability",
-  "description": "Instantly see streaming availability from JustWatch directly on IMDb top charts pages!",
-  "version": "1.0",
+  "name": "JustWatch on IMDB",
+  "description": "Instantly see streaming availability from JustWatch directly on IMDb pages!",
+  "version": "1.0.1",
   "manifest_version": 3,
   "content_scripts": [
     {

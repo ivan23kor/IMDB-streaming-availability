@@ -103,7 +103,7 @@ function attachPortListeners() {
     if (!port) return;
 
     port.onDisconnect.addListener(() => {
-        console.log("IMDB W2W: Service worker port disconnected. Reconnecting...");
+        console.log("JustWatch on IMDB: Service worker port disconnected. Reconnecting...");
 
         // Check if it's a context invalidation (extension reload/update)
         if (chrome.runtime?.id) {
@@ -111,14 +111,14 @@ function attachPortListeners() {
             try {
                 port = connect();
                 attachPortListeners();
-                console.log("IMDB W2W: Successfully reconnected to service worker");
+                console.log("JustWatch on IMDB: Successfully reconnected to service worker");
             } catch (error) {
-                console.error("IMDB W2W: Failed to reconnect:", error.message);
+                console.error("JustWatch on IMDB: Failed to reconnect:", error.message);
                 port = null;
             }
         } else {
             // Extension context invalidated - extension was reloaded
-            console.warn("IMDB W2W: Extension context invalidated. Page needs refresh.");
+            console.warn("JustWatch on IMDB: Extension context invalidated. Page needs refresh.");
             port = null;
         }
     });
@@ -141,7 +141,7 @@ function afterDOMLoaded() {
     for (const config of SELECTOR_CONFIGS) {
         const elements = document.querySelectorAll(config.container);
         if (elements.length > 0) {
-            console.log(`IMDB W2W: Found ${elements.length} elements using '${config.name}' selector (${config.container})`);
+            console.log(`JustWatch on IMDB: Found ${elements.length} elements using '${config.name}' selector (${config.container})`);
             titles = elements;
             activeConfig = config;
             break;
@@ -152,7 +152,7 @@ function afterDOMLoaded() {
     if (titles.length === 0) {
         const movieLinks = document.querySelectorAll('a[href*="/title/tt"]');
         if (movieLinks.length > 0) {
-            console.log(`IMDB W2W: Found ${movieLinks.length} movie title links as fallback`);
+            console.log(`JustWatch on IMDB: Found ${movieLinks.length} movie title links as fallback`);
             // Group movie links by their common container
             const containers = new Set();
             movieLinks.forEach(link => {
@@ -173,7 +173,7 @@ function afterDOMLoaded() {
     }
 
     if (titles.length === 0) {
-        console.log('IMDB W2W: No movie elements found on this page');
+        console.log('JustWatch on IMDB: No movie elements found on this page');
         return;
     }
 
@@ -215,7 +215,7 @@ function afterDOMLoaded() {
         attachedCount++;
     }
 
-    console.log(`IMDB W2W: Attached event listeners to ${attachedCount} of ${titles.length} elements`);
+    console.log(`JustWatch on IMDB: Attached event listeners to ${attachedCount} of ${titles.length} elements`);
 
     // Hide popup when mouse leaves the page area
     document.addEventListener('mouseleave', () => {
@@ -228,7 +228,7 @@ function extractMovieTitle(titleElement) {
     // Get the selector config stored on the element
     const config = titleElement._selectorConfig;
     if (!config) {
-        console.error('IMDB W2W: No selector config found on element');
+        console.error('JustWatch on IMDB: No selector config found on element');
         return null;
     }
 
@@ -259,7 +259,7 @@ function extractMovieTitle(titleElement) {
 
         // Additional fallback for poster cards: try to find title in nested elements
         if (!titleNode && titleElement.classList.contains('ipc-poster-card')) {
-            console.log('IMDB W2W: Trying to extract title from poster card:', titleElement);
+            console.log('JustWatch on IMDB: Trying to extract title from poster card:', titleElement);
 
             // For poster cards, the title might be in a different location
             const nestedTitle = titleElement.querySelector('[data-testid="title"]') ||
@@ -272,16 +272,16 @@ function extractMovieTitle(titleElement) {
                 // Try to get title from the title attribute or text content
                 if (nestedTitle.getAttribute('title')) {
                     movieTitle = nestedTitle.getAttribute('title').trim();
-                    console.log('IMDB W2W: Found title in title attribute:', movieTitle);
+                    console.log('JustWatch on IMDB: Found title in title attribute:', movieTitle);
                 } else if (nestedTitle.textContent) {
                     movieTitle = nestedTitle.textContent.trim();
-                    console.log('IMDB W2W: Found title in text content:', movieTitle);
+                    console.log('JustWatch on IMDB: Found title in text content:', movieTitle);
                 } else {
                     // Look for title in nested elements
                     const nestedTitleElement = nestedTitle.querySelector('[title], .ipc-lockup-overlay-title, span');
                     if (nestedTitleElement && nestedTitleElement.getAttribute('title')) {
                         movieTitle = nestedTitleElement.getAttribute('title').trim();
-                        console.log('IMDB W2W: Found title in nested element:', movieTitle);
+                        console.log('JustWatch on IMDB: Found title in nested element:', movieTitle);
                     }
                 }
             }
@@ -293,7 +293,7 @@ function extractMovieTitle(titleElement) {
                     const title = element.getAttribute('title');
                     if (title && title.length > 2 && !title.includes('Watch') && !title.includes('Rate')) {
                         movieTitle = title.trim();
-                        console.log('IMDB W2W: Found title in generic title attribute:', movieTitle);
+                        console.log('JustWatch on IMDB: Found title in generic title attribute:', movieTitle);
                         break;
                     }
                 }
@@ -309,7 +309,7 @@ function extractMovieTitle(titleElement) {
             movieTitle = (titleNode.innerText || titleNode.textContent || '').trim();
         }
         if (!movieTitle) {
-            console.warn('IMDB W2W: No title found in element:', titleElement);
+            console.warn('JustWatch on IMDB: No title found in element:', titleElement);
             return null;
         }
 
@@ -339,7 +339,7 @@ function extractMovieTitle(titleElement) {
                 if (titleLink && titleLink.href) {
                     // Navigate to the movie page to get year info (this would be more complex)
                     // For now, we'll just proceed without year for interest pages
-                    console.log('IMDB W2W: No year found in title, proceeding without year for:', movieTitle);
+                    console.log('JustWatch on IMDB: No year found in title, proceeding without year for:', movieTitle);
                 }
             }
         } else {
@@ -371,7 +371,7 @@ function extractMovieTitle(titleElement) {
         // Return title with year if available
         return year ? `${movieTitle.trim()} ${year}` : movieTitle.trim();
     } catch (error) {
-        console.error('IMDB W2W: Error extracting movie title:', error);
+        console.error('JustWatch on IMDB: Error extracting movie title:', error);
         return null;
     }
 }
@@ -487,22 +487,22 @@ function showGlobalPopup(title) {
 
     // If title extraction failed, abort
     if (!movieTitle) {
-        console.warn('IMDB W2W: Title extraction failed for element:', title);
+        console.warn('JustWatch on IMDB: Title extraction failed for element:', title);
         hideLoadingSpinner();
         return;
     }
 
-    console.log('IMDB W2W: Extracted title:', movieTitle, '- sending to background script');
+    console.log('JustWatch on IMDB: Extracted title:', movieTitle, '- sending to background script');
 
     // Send a request to background script for this movie title
     try {
         // Check if port is still connected before sending
         if (!port) {
-            console.log('IMDB W2W: Port not connected, reconnecting...');
+            console.log('JustWatch on IMDB: Port not connected, reconnecting...');
 
             // Check if extension context is valid
             if (!chrome.runtime?.id) {
-                console.error('IMDB W2W: Extension context invalidated. Cannot reconnect.');
+                console.error('JustWatch on IMDB: Extension context invalidated. Cannot reconnect.');
                 hideLoadingSpinner();
                 globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
                 globalPopup.style.display = "flex";
@@ -515,11 +515,11 @@ function showGlobalPopup(title) {
 
         port.postMessage({ title: movieTitle });
     } catch (error) {
-        console.error('IMDB W2W: Failed to send message:', error.message);
+        console.error('JustWatch on IMDB: Failed to send message:', error.message);
 
         // Check for context invalidation
         if (!chrome.runtime?.id) {
-            console.error('IMDB W2W: Extension context invalidated.');
+            console.error('JustWatch on IMDB: Extension context invalidated.');
             hideLoadingSpinner();
             globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
             globalPopup.style.display = "flex";
@@ -528,12 +528,12 @@ function showGlobalPopup(title) {
 
         // Try to reconnect and send again
         try {
-            console.log('IMDB W2W: Attempting reconnect...');
+            console.log('JustWatch on IMDB: Attempting reconnect...');
             port = chrome.runtime.connect({ name: "port" });
             attachPortListeners();
             port.postMessage({ title: movieTitle });
         } catch (retryError) {
-            console.error('IMDB W2W: Failed to reconnect:', retryError.message);
+            console.error('JustWatch on IMDB: Failed to reconnect:', retryError.message);
             hideLoadingSpinner();
             return;
         }
