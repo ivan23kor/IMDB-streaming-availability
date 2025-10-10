@@ -84,10 +84,27 @@ function connect() {
 }
 
 function attachPortListeners() {
+    if (!port) return;
+
     port.onDisconnect.addListener(() => {
         console.log("IMDB W2W: Service worker port disconnected. Reconnecting...");
-        port = connect();
-        attachPortListeners();
+
+        // Check if it's a context invalidation (extension reload/update)
+        if (chrome.runtime?.id) {
+            // Extension context is still valid, safe to reconnect
+            try {
+                port = connect();
+                attachPortListeners();
+                console.log("IMDB W2W: Successfully reconnected to service worker");
+            } catch (error) {
+                console.error("IMDB W2W: Failed to reconnect:", error.message);
+                port = null;
+            }
+        } else {
+            // Extension context invalidated - extension was reloaded
+            console.warn("IMDB W2W: Extension context invalidated. Page needs refresh.");
+            port = null;
+        }
     });
 }
 
@@ -377,19 +394,41 @@ function showGlobalPopup(title) {
         // Check if port is still connected before sending
         if (!port) {
             console.log('IMDB W2W: Port not connected, reconnecting...');
+
+            // Check if extension context is valid
+            if (!chrome.runtime?.id) {
+                console.error('IMDB W2W: Extension context invalidated. Cannot reconnect.');
+                hideLoadingSpinner();
+                globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
+                globalPopup.style.display = "flex";
+                return;
+            }
+
             port = chrome.runtime.connect({ name: "port" });
             attachPortListeners();
         }
+
         port.postMessage({ title: movieTitle });
     } catch (error) {
-        console.error('IMDB W2W: Failed to send message (port disconnected):', error);
+        console.error('IMDB W2W: Failed to send message:', error.message);
+
+        // Check for context invalidation
+        if (!chrome.runtime?.id) {
+            console.error('IMDB W2W: Extension context invalidated.');
+            hideLoadingSpinner();
+            globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
+            globalPopup.style.display = "flex";
+            return;
+        }
+
         // Try to reconnect and send again
         try {
+            console.log('IMDB W2W: Attempting reconnect...');
             port = chrome.runtime.connect({ name: "port" });
             attachPortListeners();
             port.postMessage({ title: movieTitle });
         } catch (retryError) {
-            console.error('IMDB W2W: Failed to reconnect and send message:', retryError);
+            console.error('IMDB W2W: Failed to reconnect:', retryError.message);
             hideLoadingSpinner();
             return;
         }

@@ -1,10 +1,33 @@
 import { parse, serialize } from "/lib/parse5.min.js";
 
+// Keep service worker alive
+let keepAliveInterval;
+
+function startKeepAlive() {
+    // Ping every 20 seconds to prevent service worker from being killed
+    keepAliveInterval = setInterval(() => {
+        console.log('[Service Worker] ⏰ Keepalive ping');
+    }, 20000);
+}
+
+function stopKeepAlive() {
+    if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+        keepAliveInterval = null;
+    }
+}
+
+// Start keepalive on service worker startup
+startKeepAlive();
+console.log('[Service Worker] 🚀 Service worker started, keepalive activated');
+
 // Establish connection with background script
 let requestCounter = 0;
+let activePorts = new Set();
 
 chrome.runtime.onConnect.addListener(function (port) {
     console.log('[Service Worker] ✓ Port connected from content script');
+    activePorts.add(port);
 
     port.onMessage.addListener(async function (msg) {
         if (msg.title) {
@@ -62,6 +85,12 @@ chrome.runtime.onConnect.addListener(function (port) {
 
     port.onDisconnect.addListener(() => {
         console.log('[Service Worker] ✗ Port disconnected from content script');
+        activePorts.delete(port);
+
+        // If no active ports, we can allow service worker to sleep
+        if (activePorts.size === 0) {
+            console.log('[Service Worker] No active ports remaining');
+        }
     });
 });
 
