@@ -3,6 +3,75 @@ let globalPopup = null;
 let currentHoveredTitle = null;
 let port = null;
 let loadingSpinner = null;
+let lastCursorPosition = { x: 0, y: 0 };
+
+// Selector configurations for different IMDB page types
+const SELECTOR_CONFIGS = [
+    {
+        // Chart pages (Top 250, Most Popular, etc.) - CHECK THIS FIRST
+        name: 'chart',
+        container: '.ipc-metadata-list-summary-item',
+        title: '.ipc-title__text',
+        year: '.cli-title-metadata-item',
+        removeNumberPrefix: true
+    },
+    {
+        // Upcoming Releases / Calendar page - div containers with title links
+        name: 'upcoming-releases',
+        container: 'div.ipc-metadata-list-summary-item__c',
+        title: 'a.ipc-metadata-list-summary-item__t',
+        year: null, // Year is embedded in title text like "Movie Name (2025)"
+        removeNumberPrefix: false
+    },
+    {
+        // Search/Browse results pages
+        name: 'search',
+        container: '.ipc-metadata-list-summary-item',
+        title: '.ipc-title__text',
+        year: '.cli-title-metadata-item',
+        removeNumberPrefix: false
+    },
+    {
+        // Calendar/Upcoming Releases - list items with links
+        name: 'calendar',
+        container: 'li.ipc-metadata-list-summary-item',
+        title: 'a.ipc-title-link-wrapper',
+        year: 'span.ipc-metadata-list-summary-item__li',
+        removeNumberPrefix: false
+    },
+    {
+        // Poster cards (recommendations, similar movies on individual pages)
+        name: 'poster-card',
+        container: '.ipc-poster-card',
+        title: '.ipc-title-link-wrapper',
+        year: '.ipc-metadata-list-summary-item__li:first-child',
+        removeNumberPrefix: false
+    },
+    {
+        // Title list items (various list pages)
+        name: 'title-list',
+        container: 'li.ipc-title-list-item',
+        title: '.ipc-title-link-wrapper',
+        year: '.ipc-metadata-list-summary-item__li:first-child',
+        removeNumberPrefix: false
+    },
+    {
+        // Generic list items with title links
+        name: 'generic-list',
+        container: 'li[class*="list"]',
+        title: 'a[href*="/title/"]',
+        year: 'span',
+        removeNumberPrefix: false
+    },
+    {
+        // Legacy structure (older IMDB pages)
+        name: 'legacy',
+        container: 'td.titleColumn',
+        title: 'a',
+        year: '.secondaryInfo',
+        removeNumberPrefix: false
+    }
+];
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', afterDOMLoaded);
@@ -10,31 +79,67 @@ if (document.readyState === 'loading') {
     afterDOMLoaded();
 }
 
-function afterDOMLoaded() {
-    function connect() {
-        return chrome.runtime.connect({ name: "port" });
-    }
+function connect() {
+    return chrome.runtime.connect({ name: "port" });
+}
 
-    port = connect();
+function attachPortListeners() {
     port.onDisconnect.addListener(() => {
-        console.log("Service worker port disconnected. Reconnecting...");
+        console.log("IMDB W2W: Service worker port disconnected. Reconnecting...");
         port = connect();
+        attachPortListeners();
     });
+}
+
+function afterDOMLoaded() {
+    port = connect();
+    attachPortListeners();
 
     // Create the global popup once
     createGlobalPopup();
-    
+
     // Create loading spinner
     createLoadingSpinner();
 
-    // Select all movie title elements on the IMDB Top 250 page
-    const titles = document.querySelectorAll('.ipc-metadata-list-summary-item');
+    // Try each selector configuration until we find movie elements
+    let titles = [];
+    let activeConfig = null;
+
+    for (const config of SELECTOR_CONFIGS) {
+        const elements = document.querySelectorAll(config.container);
+        if (elements.length > 0) {
+            console.log(`IMDB W2W: Found ${elements.length} elements using '${config.name}' selector`);
+            titles = elements;
+            activeConfig = config;
+            break;
+        }
+    }
+
+    if (titles.length === 0) {
+        console.log('IMDB W2W: No movie elements found on this page');
+        return;
+    }
+
+    // Attach event listeners to all found movie title elements
+    let attachedCount = 0;
     for (const title of titles) {
+        // Store the config on the element for later use
+        title._selectorConfig = activeConfig;
+
+        // Quick validation - check if this element actually has a movie link
+        const anyLink = title.querySelector('a[href*="/title/"]');
+        if (!anyLink) {
+            continue;
+        }
+
         title.addEventListener('mouseenter', (event) => {
+            lastCursorPosition = { x: event.clientX, y: event.clientY };
+            console.log('IMDB W2W: Mouse enter - cursor at', lastCursorPosition);
             showLoadingSpinner(event);
             showGlobalPopup(title);
         });
         title.addEventListener('mousemove', (event) => {
+            lastCursorPosition = { x: event.clientX, y: event.clientY };
             moveLoadingSpinner(event);
         });
         title.addEventListener('mouseleave', (event) => {
@@ -43,7 +148,7 @@ function afterDOMLoaded() {
             if (currentHoveredTitle === title) {
                 currentHoveredTitle = null;
             }
-            
+
             // Small delay to allow moving to popup or another title
             setTimeout(() => {
                 if (!currentHoveredTitle && !isHoveringPopup()) {
@@ -51,7 +156,10 @@ function afterDOMLoaded() {
                 }
             }, 100);
         });
+        attachedCount++;
     }
+
+    console.log(`IMDB W2W: Attached event listeners to ${attachedCount} of ${titles.length} elements`);
 
     // Hide popup when mouse leaves the page area
     document.addEventListener('mouseleave', () => {
@@ -60,11 +168,91 @@ function afterDOMLoaded() {
     });
 }
 
-function extractMovieTitle(title) {
-    const movieTitle = title.querySelector('.ipc-title__text').innerText
-        .replace(/^\d+\.\s+/, '');
-    const year = title.querySelector('.cli-title-metadata-item').innerText;
-    return `${movieTitle} ${year}`;
+function extractMovieTitle(titleElement) {
+    // Get the selector config stored on the element
+    const config = titleElement._selectorConfig;
+    if (!config) {
+        console.error('IMDB W2W: No selector config found on element');
+        return null;
+    }
+
+    try {
+        // Try multiple title selectors as fallbacks
+        const titleSelectors = [
+            config.title,
+            'a.ipc-title-link-wrapper',
+            'a[href*="/title/"]',
+            '.ipc-title__text',
+            'h3',
+            'a'
+        ];
+
+        let titleNode = null;
+
+        for (const selector of titleSelectors) {
+            titleNode = titleElement.querySelector(selector);
+            if (titleNode) {
+                break;
+            }
+        }
+
+        if (!titleNode) {
+            return null;
+        }
+
+        let movieTitle = (titleNode.innerText || titleNode.textContent || '').trim();
+        if (!movieTitle) {
+            return null;
+        }
+
+        // Remove number prefix if configured (e.g., "1. The Shawshank Redemption" -> "The Shawshank Redemption")
+        if (config.removeNumberPrefix) {
+            movieTitle = movieTitle.replace(/^\d+\.\s+/, '');
+        }
+
+        let year = '';
+
+        // If year selector is null, try to extract year from title text itself
+        if (config.year === null) {
+            // Extract year from title like "Movie Name (2025)"
+            const yearInTitleMatch = movieTitle.match(/\((\d{4})\)$/);
+            if (yearInTitleMatch) {
+                year = yearInTitleMatch[1];
+                // Remove year from title
+                movieTitle = movieTitle.replace(/\s*\(\d{4}\)$/, '').trim();
+            }
+        } else {
+            // Try multiple year selectors as fallbacks
+            const yearSelectors = [
+                config.year,
+                '.cli-title-metadata-item',
+                '.ipc-metadata-list-summary-item__li:first-child',
+                '.secondaryInfo',
+                'span.sc-5f7fb5b4-8'
+            ];
+
+            for (const selector of yearSelectors) {
+                const yearNode = titleElement.querySelector(selector);
+                if (yearNode) {
+                    year = yearNode.innerText || yearNode.textContent;
+                    // Clean year text (remove parentheses, extract just the year)
+                    year = year.replace(/[()]/g, '').trim();
+                    // Extract 4-digit year if embedded in other text
+                    const yearMatch = year.match(/\b(19|20)\d{2}\b/);
+                    if (yearMatch) {
+                        year = yearMatch[0];
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Return title with year if available
+        return year ? `${movieTitle.trim()} ${year}` : movieTitle.trim();
+    } catch (error) {
+        console.error('IMDB W2W: Error extracting movie title:', error);
+        return null;
+    }
 }
 
 function createGlobalPopup() {
@@ -85,7 +273,8 @@ function createGlobalPopup() {
     globalPopup.style.backdropFilter = "blur(10px)";
     globalPopup.style.position = "absolute";
     globalPopup.style.zIndex = "1000";
-    globalPopup.style.maxWidth = "400px";
+    globalPopup.style.minWidth = "300px";
+    globalPopup.style.maxWidth = "600px";
     globalPopup.style.width = "auto";
     globalPopup.style.pointerEvents = "auto"; // Allow interaction with popup
     
@@ -112,12 +301,13 @@ function createLoadingSpinner() {
     loadingSpinner.style.zIndex = '9999';
     loadingSpinner.style.display = 'none';
     loadingSpinner.style.pointerEvents = 'none';
-    
+
     const spinnerImg = document.createElement('img');
     spinnerImg.src = chrome.runtime.getURL('assets/loading.svg');
     spinnerImg.style.width = '32px';
     spinnerImg.style.height = '32px';
-    
+    spinnerImg.style.opacity = '1'; // Full opacity for visibility
+
     loadingSpinner.appendChild(spinnerImg);
     document.body.appendChild(loadingSpinner);
 }
@@ -131,9 +321,10 @@ function showLoadingSpinner(event) {
 
 function moveLoadingSpinner(event) {
     if (!loadingSpinner) return;
-    
-    loadingSpinner.style.left = (event.pageX + 10) + 'px';
-    loadingSpinner.style.top = (event.pageY - 300) + 'px';
+
+    // Position spinner at cursor position (clientX/Y for viewport, no offset)
+    loadingSpinner.style.left = event.clientX + 'px';
+    loadingSpinner.style.top = event.clientY + 'px';
 }
 
 function hideLoadingSpinner() {
@@ -144,47 +335,66 @@ function hideLoadingSpinner() {
 
 function showGlobalPopup(title) {
     currentHoveredTitle = title;
-    
-    // Position the popup next to the title with smart alignment
-    const titleRect = title.getBoundingClientRect();
+
+    // Position popup at cursor with bottom-left corner at cursor position
     const scrollX = window.scrollX || document.documentElement.scrollLeft;
     const scrollY = window.scrollY || document.documentElement.scrollTop;
-    const left = titleRect.right + scrollX + 10;
-    
-    // Smart vertical alignment based on screen position
-    const viewportHeight = window.innerHeight;
-    const titleMiddle = titleRect.top + (titleRect.height / 2);
-    const isInTopHalf = titleMiddle < (viewportHeight / 2);
-    
-    let top;
-    if (isInTopHalf) {
-        // Align top of popup with top of entry for top half
-        top = titleRect.top + scrollY;
-    } else {
-        // Align bottom of popup with bottom of entry for bottom half
-        // We'll adjust this after measuring popup height
-        top = titleRect.bottom + scrollY;
-    }
-    
-    globalPopup.style.left = left + 'px';
+
+    // Initial position at cursor (will adjust after content loads)
+    const initialLeft = lastCursorPosition.x + scrollX;
+    const initialTop = lastCursorPosition.y + scrollY;
+
+    console.log('IMDB W2W: Initial popup position - left:', initialLeft, 'top:', initialTop, '(cursor:', lastCursorPosition, 'scroll:', {scrollX, scrollY}, ')');
+
+    globalPopup.style.left = initialLeft + 'px';
+    globalPopup.style.top = initialTop + 'px';
+
     // Keep popup hidden until content is loaded
     globalPopup.style.display = "none";
-    
-    // Set initial position, will adjust after content loads
-    globalPopup.style.top = top + 'px';
-    
+
     // Store positioning info for later adjustment
-    globalPopup._positionInfo = { titleRect, isInTopHalf, scrollY };
+    globalPopup._positionInfo = {
+        cursorX: lastCursorPosition.x,
+        cursorY: lastCursorPosition.y,
+        scrollX,
+        scrollY
+    };
     
     // Clear popup content while waiting for data
     globalPopup.innerHTML = '';
     
     // Extract movie title under hover
     const movieTitle = extractMovieTitle(title);
-    
+
+    // If title extraction failed, abort
+    if (!movieTitle) {
+        hideLoadingSpinner();
+        return;
+    }
+
     // Send a request to background script for this movie title
-    port.postMessage({ title: movieTitle });
-    
+    try {
+        // Check if port is still connected before sending
+        if (!port) {
+            console.log('IMDB W2W: Port not connected, reconnecting...');
+            port = chrome.runtime.connect({ name: "port" });
+            attachPortListeners();
+        }
+        port.postMessage({ title: movieTitle });
+    } catch (error) {
+        console.error('IMDB W2W: Failed to send message (port disconnected):', error);
+        // Try to reconnect and send again
+        try {
+            port = chrome.runtime.connect({ name: "port" });
+            attachPortListeners();
+            port.postMessage({ title: movieTitle });
+        } catch (retryError) {
+            console.error('IMDB W2W: Failed to reconnect and send message:', retryError);
+            hideLoadingSpinner();
+            return;
+        }
+    }
+
     // Create streaming icons based on received data from background script
     const handleMessage = function (msg) {
         if (currentHoveredTitle === title) {
@@ -246,34 +456,44 @@ function updateGlobalPopupContent(offers) {
 
 function adjustPopupPosition() {
     if (!globalPopup || !globalPopup._positionInfo) return;
-    
-    const { titleRect, isInTopHalf, scrollY } = globalPopup._positionInfo;
+
+    const { cursorX, cursorY, scrollX, scrollY } = globalPopup._positionInfo;
     const popupRect = globalPopup.getBoundingClientRect();
     const viewportHeight = window.innerHeight;
-    
-    let newTop;
-    
-    if (isInTopHalf) {
-        // Top alignment - ensure popup doesn't go below viewport
-        newTop = titleRect.top + scrollY;
-        const popupBottom = newTop - scrollY + popupRect.height;
-        if (popupBottom > viewportHeight) {
-            newTop = scrollY + viewportHeight - popupRect.height - 10;
-        }
-    } else {
-        // Bottom alignment - align bottom of popup with bottom of entry
-        newTop = titleRect.bottom + scrollY - popupRect.height;
-        // Ensure popup doesn't go above viewport
-        if (newTop < scrollY) {
-            newTop = scrollY + 10;
-        }
-        // Ensure popup doesn't go below viewport
-        const popupBottom = newTop - scrollY + popupRect.height;
-        if (popupBottom > viewportHeight) {
-            newTop = scrollY + viewportHeight - popupRect.height - 10;
-        }
+    const viewportWidth = window.innerWidth;
+
+    console.log('IMDB W2W: Adjusting popup position - cursor:', {cursorX, cursorY}, 'popup size:', {width: popupRect.width, height: popupRect.height}, 'viewport:', {viewportWidth, viewportHeight});
+
+    // Position popup with bottom-left corner at cursor
+    let newLeft = cursorX + scrollX;
+    let newTop = cursorY + scrollY - popupRect.height;
+
+    // Handle edge cases:
+    // 1. If popup would go above viewport top, align top at cursor instead
+    if (cursorY - popupRect.height < 0) {
+        newTop = cursorY + scrollY;
     }
-    
+
+    // 2. If popup would go below viewport bottom, align bottom at viewport bottom
+    const popupBottomY = newTop - scrollY + popupRect.height;
+    if (popupBottomY > viewportHeight) {
+        newTop = scrollY + viewportHeight - popupRect.height - 10;
+    }
+
+    // 3. If popup would go beyond right edge, shift left
+    const popupRightX = newLeft - scrollX + popupRect.width;
+    if (popupRightX > viewportWidth) {
+        newLeft = scrollX + viewportWidth - popupRect.width - 10;
+    }
+
+    // 4. Ensure popup doesn't go beyond left edge
+    if (newLeft < scrollX + 10) {
+        newLeft = scrollX + 10;
+    }
+
+    console.log('IMDB W2W: Final popup position - left:', newLeft, 'top:', newTop);
+
+    globalPopup.style.left = newLeft + 'px';
     globalPopup.style.top = newTop + 'px';
 }
 

@@ -4,10 +4,23 @@ import { parse, serialize } from "/lib/parse5.min.js";
 chrome.runtime.onConnect.addListener(function (port) {
     port.onMessage.addListener(async function (msg) {
         if (msg.title) {
-            const document = await fetchDocument(msg.title);
-            const offers = findOffers(document);
-            console.log(offers);
-            port.postMessage({ offers: offers });
+            console.log(`[Scrape] Processing request for: "${msg.title}"`);
+            try {
+                const document = await fetchDocument(msg.title);
+                const offers = findOffers(document);
+                console.log(`[Scrape] Found offers:`, offers);
+                port.postMessage({ offers: offers });
+            } catch (error) {
+                console.error(`[Scrape] Error processing "${msg.title}":`, error);
+                // Send empty offers on error
+                port.postMessage({
+                    offers: [
+                        { categoryName: "stream", offers: [] },
+                        { categoryName: "rent", offers: [] },
+                        { categoryName: "buy", offers: [] }
+                    ]
+                });
+            }
         }
     });
 });
@@ -30,34 +43,67 @@ async function fetchDocument(title) {
 }
 
 function findOffersInCategory(offersNode, categoryName) {
+    if (!offersNode) {
+        console.log(`[Scrape] offersNode is null for category: ${categoryName}`);
+        return [];
+    }
+
     const categoryNode = findTagWithClass(offersNode, `buybox-row ${categoryName} inline`);
+    if (!categoryNode) {
+        console.log(`[Scrape] categoryNode not found for: ${categoryName}`);
+        return [];
+    }
+
     const offerNode = findTagWithClass(categoryNode, "buybox-row__offers");
+    if (!offerNode) {
+        console.log(`[Scrape] offerNode not found for: ${categoryName}`);
+        return [];
+    }
+
     const offerLinks = findTags(offerNode, "a");
+    console.log(`[Scrape] Found ${offerLinks.length} offer links for: ${categoryName}`);
 
     let result = [];
     for (const link of offerLinks) {
-        const price = getFirstText(link);
-        const url = link.attrs.find(attr => attr.name === "href").value;
-        const image = findTags(link, "img")[0];
-        const name = image.attrs.find(attr => attr.name === "alt").value
-        const imageSrc = image.attrs.find(attr => attr.name === "src").value
+        try {
+            const price = getFirstText(link);
+            const url = link.attrs.find(attr => attr.name === "href").value;
+            const image = findTags(link, "img")[0];
+            const name = image.attrs.find(attr => attr.name === "alt").value
+            const imageSrc = image.attrs.find(attr => attr.name === "src").value
 
-        result.push({
-            price: price,
-            url: url,
-            name: name,
-            imageSrc: imageSrc || getServiceIcon(name)
-        });
+            result.push({
+                price: price,
+                url: url,
+                name: name,
+                imageSrc: imageSrc || getServiceIcon(name)
+            });
+        } catch (error) {
+            console.error(`[Scrape] Error parsing offer link in ${categoryName}:`, error);
+        }
     }
 
     return result;
 }
 
 function findOffers(document) {
+    console.log('[Scrape] Searching for offers in document');
     const offersNode = findTagWithClass(document, "buybox__content inline");
+
+    if (!offersNode) {
+        console.warn('[Scrape] Could not find buybox__content inline node - JustWatch page structure may have changed');
+        return [
+            { categoryName: "stream", offers: [] },
+            { categoryName: "rent", offers: [] },
+            { categoryName: "buy", offers: [] }
+        ];
+    }
+
+    console.log('[Scrape] Found offers node, extracting categories');
     const stream = findOffersInCategory(offersNode, "stream");
     const rent = findOffersInCategory(offersNode, "rent");
     const buy = findOffersInCategory(offersNode, "buy");
+
     return [
         { categoryName: "stream", offers: stream },
         { categoryName: "rent", offers: rent },
@@ -66,6 +112,11 @@ function findOffers(document) {
 };
 
 function findTagWithClass(node, name) {
+    // Handle null/undefined nodes
+    if (!node) {
+        return null;
+    }
+
     // Check if current node matches
     if (node.attrs && Array.isArray(node.attrs)) {
         const matchingAttr = node.attrs.find(attr =>
@@ -96,6 +147,11 @@ function findTagWithClass(node, name) {
 // The search ends when the first tag is found.
 // Only tags from the same parent are returned.
 function findTags(node, name) {
+    // Handle null/undefined nodes
+    if (!node) {
+        return [];
+    }
+
     // Check if current node matches
     if (node.tagName === name) {
         return [node];
@@ -110,6 +166,11 @@ function findTags(node, name) {
 }
 
 function getFirstText(node) {
+    // Handle null/undefined nodes
+    if (!node) {
+        return "";
+    }
+
     if (node.nodeName === "#text") {
         return node.value;
     }
