@@ -98,53 +98,27 @@ async function fetchDocument(title) {
     const encodedTitle = encodeURIComponent(title.toLowerCase());
     const url = `https://www.justwatch.com/ca/search/?q=${encodedTitle}`;
 
-    console.log(`[Fetch] Starting fetch for: "${title}"`);
-    console.log(`[Fetch] URL: ${url}`);
-
-    const fetchStart = performance.now();
+    console.log(`[Fetch] ${url}`);
 
     try {
-        console.log('[Fetch] Sending request to JustWatch...');
         const response = await fetch(url);
-
-        console.log(`[Fetch] Response received - Status: ${response.status} ${response.statusText}`);
-        console.log(`[Fetch] Response headers:`, {
-            'content-type': response.headers.get('content-type'),
-            'content-length': response.headers.get('content-length'),
-            'server': response.headers.get('server')
-        });
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
         const html = await response.text();
-        const htmlSize = new Blob([html]).size;
-        console.log(`[Fetch] HTML received - Size: ${(htmlSize / 1024).toFixed(2)} KB`);
-
-        const parseStart = performance.now();
         const document = await parse(html);
-        const parseDuration = performance.now() - parseStart;
-
-        const fetchDuration = performance.now() - fetchStart;
-        console.log(`[Fetch] ✓ Success - Fetch: ${fetchDuration.toFixed(2)}ms, Parse: ${parseDuration.toFixed(2)}ms`);
-        console.log(`[Fetch] Using LIVE JustWatch data`);
 
         return document;
     } catch (error) {
-        const fetchDuration = performance.now() - fetchStart;
-        console.error(`[Fetch] ✗ Failed after ${fetchDuration.toFixed(2)}ms:`, error.message);
-        console.error('[Fetch] Error stack:', error.stack);
-        console.warn('[Fetch] Falling back to sample data...');
+        console.error(`[Fetch] ✗ Failed:`, error.message);
 
         // Fallback to sample data if fetch fails
         try {
-            const fallbackStart = performance.now();
             const html = await (await fetch('/jw_sample_page.html')).text();
             const document = await parse(html);
-            const fallbackDuration = performance.now() - fallbackStart;
-            console.log(`[Fetch] ✓ Fallback loaded - Duration: ${fallbackDuration.toFixed(2)}ms`);
-            console.log(`[Fetch] Using SAMPLE/FALLBACK data`);
+            console.log(`[Fetch] Using fallback sample data`);
             return document;
         } catch (fallbackError) {
             console.error('[Fetch] ✗ Fallback also failed:', fallbackError);
@@ -154,25 +128,15 @@ async function fetchDocument(title) {
 }
 
 function findOffersInCategory(offersNode, categoryName) {
-    if (!offersNode) {
-        console.log(`[Scrape] offersNode is null for category: ${categoryName}`);
-        return [];
-    }
+    if (!offersNode) return [];
 
     const categoryNode = findTagWithClass(offersNode, `buybox-row ${categoryName} inline`);
-    if (!categoryNode) {
-        console.log(`[Scrape] categoryNode not found for: ${categoryName}`);
-        return [];
-    }
+    if (!categoryNode) return [];
 
     const offerNode = findTagWithClass(categoryNode, "buybox-row__offers");
-    if (!offerNode) {
-        console.log(`[Scrape] offerNode not found for: ${categoryName}`);
-        return [];
-    }
+    if (!offerNode) return [];
 
     const offerLinks = findTags(offerNode, "a");
-    console.log(`[Scrape] Found ${offerLinks.length} offer links for: ${categoryName}`);
 
     let result = [];
     for (const link of offerLinks) {
@@ -190,7 +154,7 @@ function findOffersInCategory(offersNode, categoryName) {
                 imageSrc: imageSrc || getServiceIcon(name)
             });
         } catch (error) {
-            console.error(`[Scrape] Error parsing offer link in ${categoryName}:`, error);
+            console.error(`[Scrape] Error parsing ${categoryName} offer:`, error);
         }
     }
 
@@ -198,33 +162,10 @@ function findOffersInCategory(offersNode, categoryName) {
 }
 
 async function findOffers(document) {
-    console.log('[Scrape] ━━━ Starting offers extraction ━━━');
-    console.log('[Scrape] Analyzing document structure...');
-
-    // Count nodes and collect class names for debugging
-    const nodeStats = analyzeDocumentStructure(document);
-    console.log(`[Scrape] Document stats: ${nodeStats.totalNodes} total nodes, ${nodeStats.nodesWithClasses} with classes`);
-    console.log(`[Scrape] Sample class names found:`, nodeStats.classNames.slice(0, 20));
-
-    // Search for the buybox content
-    console.log('[Scrape] Searching for target class: "buybox__content inline"');
     const offersNode = findTagWithClass(document, "buybox__content inline");
 
     if (!offersNode) {
-        console.error('[Scrape] ✗ Could not find "buybox__content inline" node!');
-        console.warn('[Scrape] This likely means:');
-        console.warn('[Scrape]   1. JustWatch changed their page structure');
-        console.warn('[Scrape]   2. The search returned no results (movie not found)');
-        console.warn('[Scrape]   3. JustWatch is blocking/rate-limiting requests');
-
-        // Try to find similar classes
-        const similarClasses = nodeStats.classNames.filter(c => c.includes('buybox') || c.includes('content'));
-        if (similarClasses.length > 0) {
-            console.log('[Scrape] Found similar classes that might be relevant:', similarClasses);
-        } else {
-            console.log('[Scrape] No similar class names found containing "buybox" or "content"');
-        }
-
+        console.error('[Scrape] ✗ Could not find "buybox__content inline" node - search may have no results');
         return [
             { categoryName: "stream", offers: [] },
             { categoryName: "rent", offers: [] },
@@ -232,20 +173,14 @@ async function findOffers(document) {
         ];
     }
 
-    console.log('[Scrape] ✓ Found buybox__content inline node');
-
     // Check if this is a search results page or a movie detail page
-    // Search results won't have buybox-row elements
     const testCategoryNode = findTagWithClass(offersNode, "buybox-row stream inline");
     if (!testCategoryNode) {
-        console.warn('[Scrape] ⚠️  This appears to be a SEARCH RESULTS page, not a movie detail page');
-        console.log('[Scrape] Attempting to extract first search result URL...');
-
-        // Find the first search result link
+        // This is a search results page - extract first result and fetch its detail page
         const firstResultLink = extractFirstSearchResultUrl(document);
 
         if (!firstResultLink) {
-            console.error('[Scrape] ✗ Could not find any search result links');
+            console.error('[Scrape] ✗ No movie links found in search results');
             return [
                 { categoryName: "stream", offers: [] },
                 { categoryName: "rent", offers: [] },
@@ -253,13 +188,10 @@ async function findOffers(document) {
             ];
         }
 
-        console.log('[Scrape] ✓ Found first search result:', firstResultLink);
-        console.log('[Scrape] Fetching movie detail page...');
-
         // Fetch the movie detail page
         try {
             const movieUrl = `https://www.justwatch.com${firstResultLink}`;
-            console.log('[Scrape] Fetching:', movieUrl);
+            console.log('[Scrape] Redirecting to movie page:', movieUrl);
 
             const movieResponse = await fetch(movieUrl);
             if (!movieResponse.ok) {
@@ -269,10 +201,6 @@ async function findOffers(document) {
             const movieHtml = await movieResponse.text();
             const movieDocument = await parse(movieHtml);
 
-            console.log('[Scrape] ✓ Movie detail page fetched successfully');
-            console.log('[Scrape] Re-running offers extraction on movie detail page...');
-
-            // Recursively call findOffers on the movie detail page
             return findOffersFromDocument(movieDocument);
 
         } catch (error) {
@@ -285,15 +213,10 @@ async function findOffers(document) {
         }
     }
 
-    console.log('[Scrape] ✓ Confirmed this is a MOVIE DETAIL page (has buybox-row elements)');
-    console.log('[Scrape] Extracting offers from categories...');
-
+    // This is a legacy movie detail page with buybox-row structure
     const stream = findOffersInCategory(offersNode, "stream");
     const rent = findOffersInCategory(offersNode, "rent");
     const buy = findOffersInCategory(offersNode, "buy");
-
-    const totalOffers = stream.length + rent.length + buy.length;
-    console.log(`[Scrape] ━━━ Extraction complete: ${totalOffers} total offers (stream: ${stream.length}, rent: ${rent.length}, buy: ${buy.length}) ━━━`);
 
     return [
         { categoryName: "stream", offers: stream },
@@ -304,20 +227,10 @@ async function findOffers(document) {
 
 // Extract offers from a document (movie detail page only)
 function findOffersFromDocument(document) {
-    console.log('[Scrape] Extracting offers from movie detail page...');
-
-    // Analyze the movie detail page structure
-    const nodeStats = analyzeDocumentStructure(document);
-    console.log(`[Scrape] Movie page stats: ${nodeStats.totalNodes} total nodes, ${nodeStats.nodesWithClasses} with classes`);
-    console.log(`[Scrape] Movie page sample classes:`, nodeStats.classNames.slice(0, 30));
-
-    // Movie detail pages use a different structure with "offer" elements
-    // Look for all offer containers
     const allOfferElements = findAllNodesWithClass(document, "offer");
-    console.log(`[Scrape] Found ${allOfferElements.length} offer elements`);
 
     if (allOfferElements.length === 0) {
-        console.warn('[Scrape] ⚠️  No offers found on movie detail page');
+        console.warn('[Scrape] No offers found on movie detail page');
         return [
             { categoryName: "stream", offers: [] },
             { categoryName: "rent", offers: [] },
@@ -332,17 +245,15 @@ function findOffersFromDocument(document) {
             const offer = parseOfferElement(offerElement);
             if (offer) {
                 parsedOffers.push(offer);
-                console.log(`[Scrape] Parsed offer: ${offer.name} - ${offer.price}`);
             }
         } catch (error) {
-            console.error('[Scrape] Error parsing offer element:', error);
+            console.error('[Scrape] Error parsing offer:', error);
         }
     }
 
-    console.log(`[Scrape] ✓ Extracted ${parsedOffers.length} total offers`);
+    console.log(`[Scrape] Extracted ${parsedOffers.length} offers`);
 
-    // For now, return all offers under "stream" category
-    // TODO: Categorize by stream/rent/buy based on price patterns
+    // Return all offers under "stream" category
     return [
         { categoryName: "stream", offers: parsedOffers },
         { categoryName: "rent", offers: [] },
@@ -352,57 +263,42 @@ function findOffersFromDocument(document) {
 
 // Parse a single offer element from the new JustWatch structure
 function parseOfferElement(offerElement) {
-    try {
-        // Find the provider image
-        const images = findAllTags(offerElement, "img");
-        if (images.length === 0) {
-            console.warn('[Scrape] No image found in offer element');
-            return null;
+    const images = findAllTags(offerElement, "img");
+    if (images.length === 0) return null;
+
+    const image = images[0];
+    const nameAttr = image.attrs?.find(attr => attr.name === "alt");
+    const srcAttr = image.attrs?.find(attr => attr.name === "src");
+
+    if (!nameAttr || !srcAttr) return null;
+
+    // Find the price
+    const priceNode = findTagWithClass(offerElement, "offer__label__price");
+    let price = "Available";
+    if (priceNode) {
+        const priceText = getFirstText(priceNode);
+        if (priceText && priceText.trim()) {
+            price = priceText.trim();
         }
-
-        const image = images[0];
-        const nameAttr = image.attrs?.find(attr => attr.name === "alt");
-        const srcAttr = image.attrs?.find(attr => attr.name === "src");
-
-        if (!nameAttr || !srcAttr) {
-            console.warn('[Scrape] Image missing alt or src attribute');
-            return null;
-        }
-
-        const name = nameAttr.value;
-        const imageSrc = srcAttr.value;
-
-        // Find the price - look for offer__label__price
-        const priceNode = findTagWithClass(offerElement, "offer__label__price");
-        let price = "Available";
-        if (priceNode) {
-            const priceText = getFirstText(priceNode);
-            if (priceText && priceText.trim()) {
-                price = priceText.trim();
-            }
-        }
-
-        // Find the URL - look for offer__cta link
-        const links = findAllTags(offerElement, "a");
-        let url = "#";
-        for (const link of links) {
-            const hrefAttr = link.attrs?.find(attr => attr.name === "href");
-            if (hrefAttr && hrefAttr.value) {
-                url = hrefAttr.value;
-                break;
-            }
-        }
-
-        return {
-            name: name,
-            imageSrc: imageSrc,
-            price: price,
-            url: url
-        };
-    } catch (error) {
-        console.error('[Scrape] Error in parseOfferElement:', error);
-        return null;
     }
+
+    // Find the URL
+    const links = findAllTags(offerElement, "a");
+    let url = "#";
+    for (const link of links) {
+        const hrefAttr = link.attrs?.find(attr => attr.name === "href");
+        if (hrefAttr && hrefAttr.value) {
+            url = hrefAttr.value;
+            break;
+        }
+    }
+
+    return {
+        name: nameAttr.value,
+        imageSrc: srcAttr.value,
+        price: price,
+        url: url
+    };
 }
 
 // Find all nodes with a specific class (not just the first one)
@@ -434,12 +330,7 @@ function findAllNodesWithClass(node, className) {
 
 // Extract the URL of the first search result from a search results page
 function extractFirstSearchResultUrl(document) {
-    console.log('[Scrape] Searching for first search result link...');
-
-    // JustWatch search results typically have links like /ca/movie/movie-name
     const allLinks = findAllTags(document, "a");
-
-    console.log(`[Scrape] Found ${allLinks.length} total links in document`);
 
     for (const link of allLinks) {
         const hrefAttr = link.attrs?.find(attr => attr.name === "href");
@@ -449,12 +340,11 @@ function extractFirstSearchResultUrl(document) {
 
         // Look for links to movie pages (format: /ca/movie/...)
         if (href && (href.includes('/movie/') || href.includes('/tv-show/'))) {
-            console.log(`[Scrape] Found candidate link: ${href}`);
+            console.log(`[Scrape] Found movie link: ${href}`);
             return href;
         }
     }
 
-    console.error('[Scrape] ✗ No movie/tv-show links found in search results');
     return null;
 }
 
@@ -480,31 +370,6 @@ function findAllTags(node, tagName) {
     return results;
 }
 
-function analyzeDocumentStructure(node, stats = { totalNodes: 0, nodesWithClasses: 0, classNames: [] }) {
-    if (!node) return stats;
-
-    stats.totalNodes++;
-
-    // Collect class names
-    if (node.attrs && Array.isArray(node.attrs)) {
-        const classAttr = node.attrs.find(attr => attr.name === "class");
-        if (classAttr && classAttr.value) {
-            stats.nodesWithClasses++;
-            if (!stats.classNames.includes(classAttr.value)) {
-                stats.classNames.push(classAttr.value);
-            }
-        }
-    }
-
-    // Recurse into children
-    if (node.childNodes && node.childNodes.length > 0) {
-        for (const child of node.childNodes) {
-            analyzeDocumentStructure(child, stats);
-        }
-    }
-
-    return stats;
-}
 
 function findTagWithClass(node, name) {
     // Handle null/undefined nodes
