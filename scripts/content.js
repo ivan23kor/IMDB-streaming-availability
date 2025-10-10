@@ -43,7 +43,7 @@ const SELECTOR_CONFIGS = [
         // Poster cards (recommendations, similar movies on individual pages)
         name: 'poster-card',
         container: '.ipc-poster-card',
-        title: '.ipc-title-link-wrapper',
+        title: '.ipc-title-link-wrapper, [data-testid="title"], [title]',
         year: '.ipc-metadata-list-summary-item__li:first-child',
         removeNumberPrefix: false
     },
@@ -61,6 +61,22 @@ const SELECTOR_CONFIGS = [
         container: 'li[class*="list"]',
         title: 'a[href*="/title/"]',
         year: 'span',
+        removeNumberPrefix: false
+    },
+    {
+        // Interest/Genre pages - card-based layout with group containers
+        name: 'interest-genre',
+        container: 'div.ipc-metadata-list-summary-item, div[data-testid="pct-c-item"], section[data-testid="pct-c-item"], div[class*="pct-c-item"]',
+        title: 'a[href*="/title/"]',
+        year: null, // Year may need to be extracted from title or other sources
+        removeNumberPrefix: false
+    },
+    {
+        // Interest/Genre pages - fallback for more generic structure
+        name: 'interest-fallback',
+        container: 'div > div > div:has(a[href*="/title/"])',
+        title: 'a[href*="/title/"]',
+        year: null,
         removeNumberPrefix: false
     },
     {
@@ -125,10 +141,34 @@ function afterDOMLoaded() {
     for (const config of SELECTOR_CONFIGS) {
         const elements = document.querySelectorAll(config.container);
         if (elements.length > 0) {
-            console.log(`IMDB W2W: Found ${elements.length} elements using '${config.name}' selector`);
+            console.log(`IMDB W2W: Found ${elements.length} elements using '${config.name}' selector (${config.container})`);
             titles = elements;
             activeConfig = config;
             break;
+        }
+    }
+
+    // Additional fallback: try to find any movie title links directly
+    if (titles.length === 0) {
+        const movieLinks = document.querySelectorAll('a[href*="/title/tt"]');
+        if (movieLinks.length > 0) {
+            console.log(`IMDB W2W: Found ${movieLinks.length} movie title links as fallback`);
+            // Group movie links by their common container
+            const containers = new Set();
+            movieLinks.forEach(link => {
+                let container = link.closest('div, section, li, article');
+                if (container) {
+                    containers.add(container);
+                }
+            });
+            titles = Array.from(containers);
+            activeConfig = {
+                name: 'fallback-direct',
+                container: null, // We'll use the found containers directly
+                title: 'a[href*="/title/"]',
+                year: null,
+                removeNumberPrefix: false
+            };
         }
     }
 
@@ -200,7 +240,10 @@ function extractMovieTitle(titleElement) {
             'a[href*="/title/"]',
             '.ipc-title__text',
             'h3',
-            'a'
+            'a',
+            '[data-testid="pct-c-item-title"]',
+            '.ipc-poster-card-title',
+            '.ipc-lockup-overlay-title'
         ];
 
         let titleNode = null;
@@ -212,12 +255,61 @@ function extractMovieTitle(titleElement) {
             }
         }
 
-        if (!titleNode) {
+        let movieTitle = '';
+
+        // Additional fallback for poster cards: try to find title in nested elements
+        if (!titleNode && titleElement.classList.contains('ipc-poster-card')) {
+            console.log('IMDB W2W: Trying to extract title from poster card:', titleElement);
+
+            // For poster cards, the title might be in a different location
+            const nestedTitle = titleElement.querySelector('[data-testid="title"]') ||
+                               titleElement.querySelector('div[title]') ||
+                               titleElement.querySelector('span[title]') ||
+                               titleElement.querySelector('.ipc-lockup-overlay') ||
+                               titleElement.querySelector('a[href*="/title/"]');
+
+            if (nestedTitle) {
+                // Try to get title from the title attribute or text content
+                if (nestedTitle.getAttribute('title')) {
+                    movieTitle = nestedTitle.getAttribute('title').trim();
+                    console.log('IMDB W2W: Found title in title attribute:', movieTitle);
+                } else if (nestedTitle.textContent) {
+                    movieTitle = nestedTitle.textContent.trim();
+                    console.log('IMDB W2W: Found title in text content:', movieTitle);
+                } else {
+                    // Look for title in nested elements
+                    const nestedTitleElement = nestedTitle.querySelector('[title], .ipc-lockup-overlay-title, span');
+                    if (nestedTitleElement && nestedTitleElement.getAttribute('title')) {
+                        movieTitle = nestedTitleElement.getAttribute('title').trim();
+                        console.log('IMDB W2W: Found title in nested element:', movieTitle);
+                    }
+                }
+            }
+
+            // Last resort: try to find any element with a title attribute that looks like a movie title
+            if (!movieTitle) {
+                const titledElements = titleElement.querySelectorAll('[title]');
+                for (const element of titledElements) {
+                    const title = element.getAttribute('title');
+                    if (title && title.length > 2 && !title.includes('Watch') && !title.includes('Rate')) {
+                        movieTitle = title.trim();
+                        console.log('IMDB W2W: Found title in generic title attribute:', movieTitle);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!titleNode && !movieTitle) {
             return null;
         }
 
-        let movieTitle = (titleNode.innerText || titleNode.textContent || '').trim();
+        // If we didn't get title from poster card fallback, get it from titleNode
+        if (!movieTitle && titleNode) {
+            movieTitle = (titleNode.innerText || titleNode.textContent || '').trim();
+        }
         if (!movieTitle) {
+            console.warn('IMDB W2W: No title found in element:', titleElement);
             return null;
         }
 
@@ -233,7 +325,7 @@ function extractMovieTitle(titleElement) {
 
         let year = '';
 
-        // If year selector is null, try to extract year from title text itself
+        // If year selector is null, try to extract year from title text itself or URL
         if (config.year === null) {
             // Extract year from title like "Movie Name (2025)"
             const yearInTitleMatch = movieTitle.match(/\((\d{4})\)$/);
@@ -241,6 +333,14 @@ function extractMovieTitle(titleElement) {
                 year = yearInTitleMatch[1];
                 // Remove year from title
                 movieTitle = movieTitle.replace(/\s*\(\d{4}\)$/, '').trim();
+            } else {
+                // Try to extract year from the URL of the movie link
+                const titleLink = titleElement.querySelector('a[href*="/title/"]');
+                if (titleLink && titleLink.href) {
+                    // Navigate to the movie page to get year info (this would be more complex)
+                    // For now, we'll just proceed without year for interest pages
+                    console.log('IMDB W2W: No year found in title, proceeding without year for:', movieTitle);
+                }
             }
         } else {
             // Try multiple year selectors as fallbacks
