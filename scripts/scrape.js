@@ -45,7 +45,7 @@ chrome.runtime.onConnect.addListener(function (port) {
                 const document = await fetchDocument(msg.title);
 
                 // Extract offers
-                const offers = findOffers(document);
+                const offers = await findOffers(document);
 
                 const requestDuration = performance.now() - requestStart;
 
@@ -197,7 +197,7 @@ function findOffersInCategory(offersNode, categoryName) {
     return result;
 }
 
-function findOffers(document) {
+async function findOffers(document) {
     console.log('[Scrape] ━━━ Starting offers extraction ━━━');
     console.log('[Scrape] Analyzing document structure...');
 
@@ -233,6 +233,59 @@ function findOffers(document) {
     }
 
     console.log('[Scrape] ✓ Found buybox__content inline node');
+
+    // Check if this is a search results page or a movie detail page
+    // Search results won't have buybox-row elements
+    const testCategoryNode = findTagWithClass(offersNode, "buybox-row stream inline");
+    if (!testCategoryNode) {
+        console.warn('[Scrape] ⚠️  This appears to be a SEARCH RESULTS page, not a movie detail page');
+        console.log('[Scrape] Attempting to extract first search result URL...');
+
+        // Find the first search result link
+        const firstResultLink = extractFirstSearchResultUrl(document);
+
+        if (!firstResultLink) {
+            console.error('[Scrape] ✗ Could not find any search result links');
+            return [
+                { categoryName: "stream", offers: [] },
+                { categoryName: "rent", offers: [] },
+                { categoryName: "buy", offers: [] }
+            ];
+        }
+
+        console.log('[Scrape] ✓ Found first search result:', firstResultLink);
+        console.log('[Scrape] Fetching movie detail page...');
+
+        // Fetch the movie detail page
+        try {
+            const movieUrl = `https://www.justwatch.com${firstResultLink}`;
+            console.log('[Scrape] Fetching:', movieUrl);
+
+            const movieResponse = await fetch(movieUrl);
+            if (!movieResponse.ok) {
+                throw new Error(`HTTP ${movieResponse.status}: ${movieResponse.statusText}`);
+            }
+
+            const movieHtml = await movieResponse.text();
+            const movieDocument = await parse(movieHtml);
+
+            console.log('[Scrape] ✓ Movie detail page fetched successfully');
+            console.log('[Scrape] Re-running offers extraction on movie detail page...');
+
+            // Recursively call findOffers on the movie detail page
+            return findOffersFromDocument(movieDocument);
+
+        } catch (error) {
+            console.error('[Scrape] ✗ Failed to fetch movie detail page:', error.message);
+            return [
+                { categoryName: "stream", offers: [] },
+                { categoryName: "rent", offers: [] },
+                { categoryName: "buy", offers: [] }
+            ];
+        }
+    }
+
+    console.log('[Scrape] ✓ Confirmed this is a MOVIE DETAIL page (has buybox-row elements)');
     console.log('[Scrape] Extracting offers from categories...');
 
     const stream = findOffersInCategory(offersNode, "stream");
@@ -247,7 +300,83 @@ function findOffers(document) {
         { categoryName: "rent", offers: rent },
         { categoryName: "buy", offers: buy }
     ];
-};
+}
+
+// Extract offers from a document (movie detail page only)
+function findOffersFromDocument(document) {
+    console.log('[Scrape] Extracting offers from movie detail page...');
+
+    const offersNode = findTagWithClass(document, "buybox__content inline");
+    if (!offersNode) {
+        console.error('[Scrape] ✗ No buybox__content inline node in movie detail page');
+        return [
+            { categoryName: "stream", offers: [] },
+            { categoryName: "rent", offers: [] },
+            { categoryName: "buy", offers: [] }
+        ];
+    }
+
+    const stream = findOffersInCategory(offersNode, "stream");
+    const rent = findOffersInCategory(offersNode, "rent");
+    const buy = findOffersInCategory(offersNode, "buy");
+
+    const totalOffers = stream.length + rent.length + buy.length;
+    console.log(`[Scrape] ✓ Extracted ${totalOffers} total offers (stream: ${stream.length}, rent: ${rent.length}, buy: ${buy.length})`);
+
+    return [
+        { categoryName: "stream", offers: stream },
+        { categoryName: "rent", offers: rent },
+        { categoryName: "buy", offers: buy }
+    ];
+}
+
+// Extract the URL of the first search result from a search results page
+function extractFirstSearchResultUrl(document) {
+    console.log('[Scrape] Searching for first search result link...');
+
+    // JustWatch search results typically have links like /ca/movie/movie-name
+    const allLinks = findAllTags(document, "a");
+
+    console.log(`[Scrape] Found ${allLinks.length} total links in document`);
+
+    for (const link of allLinks) {
+        const hrefAttr = link.attrs?.find(attr => attr.name === "href");
+        if (!hrefAttr) continue;
+
+        const href = hrefAttr.value;
+
+        // Look for links to movie pages (format: /ca/movie/...)
+        if (href && (href.includes('/movie/') || href.includes('/tv-show/'))) {
+            console.log(`[Scrape] Found candidate link: ${href}`);
+            return href;
+        }
+    }
+
+    console.error('[Scrape] ✗ No movie/tv-show links found in search results');
+    return null;
+}
+
+// Find all tags with a specific tag name (exhaustive search)
+function findAllTags(node, tagName) {
+    const results = [];
+
+    function traverse(n) {
+        if (!n) return;
+
+        if (n.tagName === tagName) {
+            results.push(n);
+        }
+
+        if (n.childNodes && n.childNodes.length > 0) {
+            for (const child of n.childNodes) {
+                traverse(child);
+            }
+        }
+    }
+
+    traverse(node);
+    return results;
+}
 
 function analyzeDocumentStructure(node, stats = { totalNodes: 0, nodesWithClasses: 0, classNames: [] }) {
     if (!node) return stats;
