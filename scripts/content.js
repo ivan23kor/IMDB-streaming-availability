@@ -103,7 +103,7 @@ function attachPortListeners() {
     if (!port) return;
 
     port.onDisconnect.addListener(() => {
-        console.log("JustWatch on IMDB: Service worker port disconnected. Reconnecting...");
+        console.log("Just Watch IMDB: Service worker port disconnected. Reconnecting...");
 
         // Check if it's a context invalidation (extension reload/update)
         if (chrome.runtime?.id) {
@@ -111,14 +111,14 @@ function attachPortListeners() {
             try {
                 port = connect();
                 attachPortListeners();
-                console.log("JustWatch on IMDB: Successfully reconnected to service worker");
+                console.log("Just Watch IMDB: Successfully reconnected to service worker");
             } catch (error) {
-                console.error("JustWatch on IMDB: Failed to reconnect:", error.message);
+                console.error("Just Watch IMDB: Failed to reconnect:", error.message);
                 port = null;
             }
         } else {
             // Extension context invalidated - extension was reloaded
-            console.warn("JustWatch on IMDB: Extension context invalidated. Page needs refresh.");
+            console.warn("Just Watch IMDB: Extension context invalidated. Page needs refresh.");
             port = null;
         }
     });
@@ -141,7 +141,7 @@ function afterDOMLoaded() {
     for (const config of SELECTOR_CONFIGS) {
         const elements = document.querySelectorAll(config.container);
         if (elements.length > 0) {
-            console.log(`JustWatch on IMDB: Found ${elements.length} elements using '${config.name}' selector (${config.container})`);
+            console.log(`Just Watch IMDB: Found ${elements.length} elements using '${config.name}' selector (${config.container})`);
             titles = elements;
             activeConfig = config;
             break;
@@ -152,7 +152,7 @@ function afterDOMLoaded() {
     if (titles.length === 0) {
         const movieLinks = document.querySelectorAll('a[href*="/title/tt"]');
         if (movieLinks.length > 0) {
-            console.log(`JustWatch on IMDB: Found ${movieLinks.length} movie title links as fallback`);
+            console.log(`Just Watch IMDB: Found ${movieLinks.length} movie title links as fallback`);
             // Group movie links by their common container
             const containers = new Set();
             movieLinks.forEach(link => {
@@ -173,7 +173,7 @@ function afterDOMLoaded() {
     }
 
     if (titles.length === 0) {
-        console.log('JustWatch on IMDB: No movie elements found on this page');
+        console.log('Just Watch IMDB: No movie elements found on this page');
         return;
     }
 
@@ -215,7 +215,7 @@ function afterDOMLoaded() {
         attachedCount++;
     }
 
-    console.log(`JustWatch on IMDB: Attached event listeners to ${attachedCount} of ${titles.length} elements`);
+    console.log(`Just Watch IMDB: Attached event listeners to ${attachedCount} of ${titles.length} elements`);
 
     // Hide popup when mouse leaves the page area
     document.addEventListener('mouseleave', () => {
@@ -228,7 +228,7 @@ function extractMovieTitle(titleElement) {
     // Get the selector config stored on the element
     const config = titleElement._selectorConfig;
     if (!config) {
-        console.error('JustWatch on IMDB: No selector config found on element');
+        console.error('Just Watch IMDB: No selector config found on element');
         return null;
     }
 
@@ -259,29 +259,29 @@ function extractMovieTitle(titleElement) {
 
         // Additional fallback for poster cards: try to find title in nested elements
         if (!titleNode && titleElement.classList.contains('ipc-poster-card')) {
-            console.log('JustWatch on IMDB: Trying to extract title from poster card:', titleElement);
+            console.log('Just Watch IMDB: Trying to extract title from poster card:', titleElement);
 
             // For poster cards, the title might be in a different location
             const nestedTitle = titleElement.querySelector('[data-testid="title"]') ||
-                               titleElement.querySelector('div[title]') ||
-                               titleElement.querySelector('span[title]') ||
-                               titleElement.querySelector('.ipc-lockup-overlay') ||
-                               titleElement.querySelector('a[href*="/title/"]');
+                titleElement.querySelector('div[title]') ||
+                titleElement.querySelector('span[title]') ||
+                titleElement.querySelector('.ipc-lockup-overlay') ||
+                titleElement.querySelector('a[href*="/title/"]');
 
             if (nestedTitle) {
                 // Try to get title from the title attribute or text content
                 if (nestedTitle.getAttribute('title')) {
                     movieTitle = nestedTitle.getAttribute('title').trim();
-                    console.log('JustWatch on IMDB: Found title in title attribute:', movieTitle);
+                    console.log('Just Watch IMDB: Found title in title attribute:', movieTitle);
                 } else if (nestedTitle.textContent) {
                     movieTitle = nestedTitle.textContent.trim();
-                    console.log('JustWatch on IMDB: Found title in text content:', movieTitle);
+                    console.log('Just Watch IMDB: Found title in text content:', movieTitle);
                 } else {
                     // Look for title in nested elements
                     const nestedTitleElement = nestedTitle.querySelector('[title], .ipc-lockup-overlay-title, span');
                     if (nestedTitleElement && nestedTitleElement.getAttribute('title')) {
                         movieTitle = nestedTitleElement.getAttribute('title').trim();
-                        console.log('JustWatch on IMDB: Found title in nested element:', movieTitle);
+                        console.log('Just Watch IMDB: Found title in nested element:', movieTitle);
                     }
                 }
             }
@@ -293,7 +293,7 @@ function extractMovieTitle(titleElement) {
                     const title = element.getAttribute('title');
                     if (title && title.length > 2 && !title.includes('Watch') && !title.includes('Rate')) {
                         movieTitle = title.trim();
-                        console.log('JustWatch on IMDB: Found title in generic title attribute:', movieTitle);
+                        console.log('Just Watch IMDB: Found title in generic title attribute:', movieTitle);
                         break;
                     }
                 }
@@ -309,7 +309,7 @@ function extractMovieTitle(titleElement) {
             movieTitle = (titleNode.innerText || titleNode.textContent || '').trim();
         }
         if (!movieTitle) {
-            console.warn('JustWatch on IMDB: No title found in element:', titleElement);
+            console.warn('Just Watch IMDB: No title found in element:', titleElement);
             return null;
         }
 
@@ -339,7 +339,7 @@ function extractMovieTitle(titleElement) {
                 if (titleLink && titleLink.href) {
                     // Navigate to the movie page to get year info (this would be more complex)
                     // For now, we'll just proceed without year for interest pages
-                    console.log('JustWatch on IMDB: No year found in title, proceeding without year for:', movieTitle);
+                    console.log('Just Watch IMDB: No year found in title, proceeding without year for:', movieTitle);
                 }
             }
         } else {
@@ -371,7 +371,7 @@ function extractMovieTitle(titleElement) {
         // Return title with year if available
         return year ? `${movieTitle.trim()} ${year}` : movieTitle.trim();
     } catch (error) {
-        console.error('JustWatch on IMDB: Error extracting movie title:', error);
+        console.error('Just Watch IMDB: Error extracting movie title:', error);
         return null;
     }
 }
@@ -398,12 +398,12 @@ function createGlobalPopup() {
     globalPopup.style.maxWidth = "600px";
     globalPopup.style.width = "auto";
     globalPopup.style.pointerEvents = "auto"; // Allow interaction with popup
-    
+
     // Add hover events to popup itself
     globalPopup.addEventListener('mouseenter', () => {
         // Keep popup visible when hovering over it
     });
-    
+
     globalPopup.addEventListener('mouseleave', () => {
         // Hide popup when leaving both title and popup
         setTimeout(() => {
@@ -412,7 +412,7 @@ function createGlobalPopup() {
             }
         }, 50);
     });
-    
+
     document.body.appendChild(globalPopup);
 }
 
@@ -435,7 +435,7 @@ function createLoadingSpinner() {
 
 function showLoadingSpinner(event) {
     if (!loadingSpinner) return;
-    
+
     loadingSpinner.style.display = 'block';
     moveLoadingSpinner(event);
 }
@@ -478,31 +478,31 @@ function showGlobalPopup(title) {
         scrollX,
         scrollY
     };
-    
+
     // Clear popup content while waiting for data
     globalPopup.innerHTML = '';
-    
+
     // Extract movie title under hover
     const movieTitle = extractMovieTitle(title);
 
     // If title extraction failed, abort
     if (!movieTitle) {
-        console.warn('JustWatch on IMDB: Title extraction failed for element:', title);
+        console.warn('Just Watch IMDB: Title extraction failed for element:', title);
         hideLoadingSpinner();
         return;
     }
 
-    console.log('JustWatch on IMDB: Extracted title:', movieTitle, '- sending to background script');
+    console.log('Just Watch IMDB: Extracted title:', movieTitle, '- sending to background script');
 
     // Send a request to background script for this movie title
     try {
         // Check if port is still connected before sending
         if (!port) {
-            console.log('JustWatch on IMDB: Port not connected, reconnecting...');
+            console.log('Just Watch IMDB: Port not connected, reconnecting...');
 
             // Check if extension context is valid
             if (!chrome.runtime?.id) {
-                console.error('JustWatch on IMDB: Extension context invalidated. Cannot reconnect.');
+                console.error('Just Watch IMDB: Extension context invalidated. Cannot reconnect.');
                 hideLoadingSpinner();
                 globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
                 globalPopup.style.display = "flex";
@@ -515,11 +515,11 @@ function showGlobalPopup(title) {
 
         port.postMessage({ title: movieTitle });
     } catch (error) {
-        console.error('JustWatch on IMDB: Failed to send message:', error.message);
+        console.error('Just Watch IMDB: Failed to send message:', error.message);
 
         // Check for context invalidation
         if (!chrome.runtime?.id) {
-            console.error('JustWatch on IMDB: Extension context invalidated.');
+            console.error('Just Watch IMDB: Extension context invalidated.');
             hideLoadingSpinner();
             globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
             globalPopup.style.display = "flex";
@@ -528,12 +528,12 @@ function showGlobalPopup(title) {
 
         // Try to reconnect and send again
         try {
-            console.log('JustWatch on IMDB: Attempting reconnect...');
+            console.log('Just Watch IMDB: Attempting reconnect...');
             port = chrome.runtime.connect({ name: "port" });
             attachPortListeners();
             port.postMessage({ title: movieTitle });
         } catch (retryError) {
-            console.error('JustWatch on IMDB: Failed to reconnect:', retryError.message);
+            console.error('Just Watch IMDB: Failed to reconnect:', retryError.message);
             hideLoadingSpinner();
             return;
         }
@@ -566,9 +566,9 @@ function hideGlobalPopup() {
 
 function updateGlobalPopupContent(offers) {
     if (!globalPopup) return;
-    
+
     globalPopup.innerHTML = "";
-    
+
     // Check if there are any offers to display
     let hasOffers = false;
     for (const offer of offers) {
@@ -577,7 +577,7 @@ function updateGlobalPopupContent(offers) {
             break;
         }
     }
-    
+
     // Only show popup if there are offers
     if (hasOffers) {
         for (const offer of offers) {
@@ -588,7 +588,7 @@ function updateGlobalPopupContent(offers) {
                 globalPopup.appendChild(category);
             }
         }
-        
+
         // Adjust position after content is loaded
         adjustPopupPosition();
     } else {
@@ -648,7 +648,7 @@ function isHoveringPopup() {
 
 function createCategoryNode(categoryName, offers) {
     if (!offers || offers.length === 0) return null;
-    
+
     const categoryContainer = document.createElement('div');
     categoryContainer.style.marginBottom = "8px";
 
