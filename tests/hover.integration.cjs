@@ -182,3 +182,190 @@ test('current IMDb rows use the title and year while empty links are ignored', a
         await rm(profile, { recursive: true, force: true });
     }
 });
+
+test('country selection changes local offers, rejects stale replies and persists across pages', async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'imdb-countries-'));
+    const extension = resolve(__dirname, '..');
+    const context = await chromium.launchPersistentContext(profile, {
+        headless: true,
+        channel: 'chromium',
+        executablePath: process.env.CHROME_PATH,
+        args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--no-sandbox'],
+    });
+    context.setDefaultTimeout(10000);
+    let releaseFrance;
+    let markFranceReady;
+    const franceReady = new Promise(resolve => markFranceReady = resolve);
+    try {
+        const requests = [];
+        const errors = [];
+        await context.route('https://www.imdb.com/**', route => route.fulfill({
+            contentType: 'text/html',
+            body: `<html><body><h1>Top 250</h1><ul>${row('The Shawshank Redemption')}</ul></body></html>`
+        }));
+        const regions = {
+            '/us/search': { host: 'www.justwatch.com', provider: 'US provider', price: '$3.99' },
+            '/de/Suche': { host: 'www.justwatch.com', provider: 'German provider', price: '3,99 €' },
+            '/fr/recherche': { host: 'www.justwatch.com', provider: 'French provider', price: '4,99 €' },
+            '/br/busca': { host: 'br.justwatch.com', provider: 'Brazilian provider', price: 'R$ 9,90' },
+            '/cz/vyhledání': { host: 'www.justwatch.com', empty: true },
+            '/ca/search': { host: 'www.justwatch.com', provider: 'Canadian provider', price: 'CA$ 4.99' }
+        };
+        await context.route(/^https:\/\/(?:www|br)\.justwatch\.com\//, async route => {
+            const url = new URL(route.request().url());
+            const path = decodeURIComponent(url.pathname);
+            requests.push({ host: url.host, path, query: url.searchParams.get('q') });
+            const region = regions[path];
+            assert.ok(region, `Unexpected search path: ${path}`);
+            assert.equal(url.host, region.host);
+            if (path === '/fr/recherche') await new Promise(resolve => {
+                releaseFrance = resolve;
+                markFranceReady();
+            });
+            const extraOffers = path === '/de/Suche' ? Array.from({ length: 35 }, (_, index) => `<a class="offer" href="https://example.com/de/${index}"><img alt="German provider ${index}" src="https://example.com/icon.png"><span>${index},00 €</span></a>`).join('') : '';
+            const body = region.empty
+                ? '<html><div class="search-content"><div class="title-list-options__box-left">0 titulů<span>Popularita</span></div></div></html>'
+                : `<html><div class="title-list-row"><section class="buybox__content"><div class="buybox-row rent inline"><div class="buybox-row__offers"><a class="offer" href="https://example.com/${path.split('/')[1]}"><img alt="${region.provider}" src="https://example.com/icon.png"><span>${region.price}</span></a>${extraOffers}</div></div></section></div></html>`;
+            await route.fulfill({ contentType: 'text/html', body });
+        });
+        const page = await context.newPage();
+        page.on('pageerror', error => errors.push(error.message));
+        await page.goto('https://www.imdb.com/chart/top/');
+        await page.locator('.global-offers-popup').waitFor({ state: 'attached' });
+        await page.getByRole('heading', { name: '1. The Shawshank Redemption' }).hover();
+        const popup = page.locator('.global-offers-popup');
+        await popup.getByText('$3.99', { exact: true }).waitFor();
+        const country = page.getByRole('combobox', { name: 'Streaming country' });
+        assert.equal(await country.inputValue(), 'us');
+        assert.ok(await country.locator('option').count() > 100);
+        assert.equal(await country.locator('option[value=uk]').textContent(), 'United Kingdom');
+        assert.equal(await country.locator('option[value=jp]').textContent(), 'Japan');
+        await country.hover();
+        await country.selectOption('de');
+        await popup.getByText('3,99 €', { exact: true }).waitFor();
+        await country.hover();
+        const beforeCountryChange = await popup.boundingBox();
+        await country.selectOption('fr');
+        await franceReady;
+        await popup.getByText('Loading streaming options…', { exact: true }).waitFor();
+        const duringCountryChange = await popup.boundingBox();
+        assert.equal(duringCountryChange.width, beforeCountryChange.width);
+        assert.equal(duringCountryChange.y, beforeCountryChange.y);
+        assert.equal(await popup.getByText('3,99 €', { exact: true }).count(), 0);
+        await country.selectOption('us');
+        await popup.getByText('$3.99', { exact: true }).waitFor();
+        const staleReply = context.waitForEvent('console', message => message.text().includes('[Request #3] Sending response to content script'));
+        releaseFrance();
+        releaseFrance = null;
+        await staleReply;
+        assert.equal(await popup.getByText('4,99 €', { exact: true }).count(), 0);
+        assert.equal(await country.inputValue(), 'us');
+        await country.selectOption('cz');
+        await popup.getByText('No streaming options available', { exact: true }).waitFor();
+        assert.equal(await country.isVisible(), true);
+        await country.selectOption('br');
+        await popup.getByText('R$ 9,90', { exact: true }).waitFor();
+        await page.reload();
+        await page.locator('.global-offers-popup').waitFor({ state: 'attached' });
+        await page.getByRole('heading', { name: '1. The Shawshank Redemption' }).hover();
+        await popup.getByText('R$ 9,90', { exact: true }).waitFor();
+        assert.equal(await country.inputValue(), 'br');
+        const otherPage = await context.newPage();
+        await otherPage.goto('https://www.imdb.com/chart/top/');
+        await otherPage.locator('.global-offers-popup').waitFor({ state: 'attached' });
+        await otherPage.getByRole('heading', { name: '1. The Shawshank Redemption' }).hover();
+        await otherPage.getByText('R$ 9,90', { exact: true }).waitFor();
+        const otherCountry = otherPage.getByRole('combobox', { name: 'Streaming country' });
+        await otherCountry.hover();
+        await otherCountry.selectOption('ca');
+        await otherPage.getByText('CA$ 4.99', { exact: true }).waitFor();
+        assert.equal(await country.inputValue(), 'ca');
+        const cdp = await context.newCDPSession(otherPage);
+        await cdp.send('ServiceWorker.enable');
+        await cdp.send('ServiceWorker.stopAllWorkers');
+        await otherPage.getByRole('heading', { name: 'Top 250', exact: true }).hover();
+        await otherPage.locator('.global-offers-popup').waitFor({ state: 'hidden' });
+        await otherPage.getByRole('heading', { name: '1. The Shawshank Redemption' }).hover();
+        await otherPage.getByText('CA$ 4.99', { exact: true }).waitFor();
+        assert.equal(requests[0].path, '/us/search');
+        assert.equal(requests.at(-1).path, '/ca/search');
+        assert.ok(requests.every(request => request.query === 'the shawshank redemption 1994'));
+        assert.deepEqual(errors, []);
+    } finally {
+        if (releaseFrance) releaseFrance();
+        await context.close();
+        await rm(profile, { recursive: true, force: true });
+    }
+});
+
+test('live country selection returns local offers across continents', { skip: !process.env.LIVE_JUSTWATCH }, async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'imdb-worldwide-'));
+    const extension = resolve(__dirname, '..');
+    const context = await chromium.launchPersistentContext(profile, {
+        headless: true,
+        channel: 'chromium',
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        executablePath: process.env.CHROME_PATH,
+        args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--no-sandbox'],
+    });
+    context.setDefaultTimeout(25000);
+    const diagnostics = [];
+    let page;
+    context.on('console', message => {
+        if (message.type() === 'error' || message.text().startsWith('[Fetch]')) diagnostics.push(message.text());
+    });
+    try {
+        const requests = [];
+        context.on('request', request => {
+            if (/https:\/\/(?:www|br)\.justwatch\.com\//.test(request.url())) requests.push(new URL(request.url()));
+        });
+        await context.route('https://www.imdb.com/**', route => route.fulfill({
+            contentType: 'text/html',
+            body: `<html><body><h1>Top 250</h1><ul>${row('The Shawshank Redemption')}</ul></body></html>`
+        }));
+        page = await context.newPage();
+        await page.goto('https://www.imdb.com/chart/top/');
+        await page.locator('.global-offers-popup').waitFor({ state: 'attached' });
+        await page.getByRole('heading', { name: '1. The Shawshank Redemption' }).hover();
+        const popup = page.locator('.global-offers-popup');
+        const country = page.getByRole('combobox', { name: 'Streaming country' });
+        for (const [code, path] of [
+            ['us', '/us/search'], ['ca', '/ca/search'], ['uk', '/uk/search'],
+            ['de', '/de/Suche'], ['fr', '/fr/recherche'], ['cz', '/cz/vyhledání'],
+            ['br', '/br/busca'], ['in', '/in/search'], ['jp', '/jp/検索'],
+            ['au', '/au/search'], ['za', '/za/search'], ['ae', '/ae/search']
+        ]) {
+            if (code !== 'us') {
+                await country.hover();
+                await country.selectOption(code);
+            }
+            await popup.locator('a img').first().waitFor({ state: 'visible' });
+            assert.equal(await country.inputValue(), code);
+            assert.equal(decodeURIComponent(requests.at(-1).pathname), path);
+            const offers = await popup.locator('a').evaluateAll(links => links.map(link => ({
+                name: link.querySelector('img').alt,
+                url: link.href,
+                price: link.textContent.trim()
+            })));
+            assert.ok(offers.length > 0, `${code} has no offers`);
+            assert.ok(offers.every(offer => offer.name && offer.price && /^https:\/\//.test(offer.url)));
+            if (code === 'br') assert.equal(requests.at(-1).host, 'br.justwatch.com');
+            if (process.env.REVIEW_SCREENSHOT && code === 'us') await page.screenshot({ path: process.env.REVIEW_SCREENSHOT });
+            console.log(code, JSON.stringify({ offers: offers.length, price: offers[0].price }));
+        }
+    } catch (error) {
+        console.log('Country diagnostics', JSON.stringify(diagnostics));
+        if (page) {
+            console.log('Popup state', JSON.stringify(await page.locator('.global-offers-popup').evaluate(element => ({
+                visible: getComputedStyle(element).display,
+                text: element.innerText,
+                country: element.querySelector('select').value
+            }))));
+            await page.screenshot({ path: '/tmp/justwatch-worldwide-failure.png' });
+        }
+        throw error;
+    } finally {
+        await context.close();
+        await rm(profile, { recursive: true, force: true });
+    }
+});

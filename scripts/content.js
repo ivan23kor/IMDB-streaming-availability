@@ -6,6 +6,10 @@ let pendingRequest = null;
 let requestCounter = 0;
 let loadingSpinner = null;
 let lastCursorPosition = { x: 0, y: 0 };
+let selectedCountry = JustWatchRegions.defaultCountry;
+let countrySelect = null;
+let popupContent = null;
+let popupTitleElement = null;
 
 // Selector configurations for different IMDB page types
 const SELECTOR_CONFIGS = [
@@ -100,7 +104,8 @@ function attachPortListeners() {
         const request = pendingRequest;
         clearTimeout(request.timeout);
         pendingRequest = null;
-        if (currentHoveredTitle !== request.title) return;
+        if (popupTitleElement !== request.title || selectedCountry !== request.country) return;
+        if (currentHoveredTitle !== request.title && !isHoveringPopup()) return;
         if (msg.error) {
             showRequestError(request.title, msg.error);
             return;
@@ -121,12 +126,23 @@ function attachPortListeners() {
     });
 }
 
-function afterDOMLoaded() {
+async function afterDOMLoaded() {
+    try {
+        const settings = await chrome.storage.local.get({ country: selectedCountry });
+        selectedCountry = JustWatchRegions.normalizeCountry(settings.country);
+    } catch {
+        selectedCountry = JustWatchRegions.defaultCountry;
+    }
+
     // Create the global popup once
     createGlobalPopup();
 
     // Create loading spinner
     createLoadingSpinner();
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.country) updateCountry(changes.country.newValue);
+    });
 
     document.addEventListener('mouseover', (event) => {
         const title = findMovieElement(event.target);
@@ -144,6 +160,7 @@ function afterDOMLoaded() {
     document.addEventListener('mouseout', (event) => {
         const title = currentHoveredTitle;
         if (!title || !title.contains(event.target) || title.contains(event.relatedTarget)) return;
+        if (event.relatedTarget instanceof Node && globalPopup.contains(event.relatedTarget)) return;
         hideLoadingSpinner();
         currentHoveredTitle = null;
         setTimeout(() => {
@@ -286,7 +303,53 @@ function createGlobalPopup() {
     globalPopup.style.minWidth = "300px";
     globalPopup.style.maxWidth = "600px";
     globalPopup.style.width = "auto";
+    globalPopup.style.maxHeight = 'calc(100vh - 20px)';
     globalPopup.style.pointerEvents = "auto"; // Allow interaction with popup
+
+    const countryLabel = document.createElement('label');
+    countryLabel.textContent = 'Country';
+    countryLabel.style.display = 'flex';
+    countryLabel.style.alignItems = 'center';
+    countryLabel.style.gap = '8px';
+    countryLabel.style.flexShrink = '0';
+
+    countrySelect = document.createElement('select');
+    countrySelect.setAttribute('aria-label', 'Streaming country');
+    countrySelect.style.font = 'inherit';
+    countrySelect.style.color = '#eee';
+    countrySelect.style.background = '#202020';
+    countrySelect.style.border = '1px solid #666';
+    countrySelect.style.borderRadius = '4px';
+    countrySelect.style.padding = '4px';
+    countrySelect.style.flex = '1';
+    countrySelect.style.minWidth = '0';
+    for (const [code, name] of Object.entries(JustWatchRegions.countries)) {
+        const option = document.createElement('option');
+        option.value = code;
+        option.textContent = name;
+        countrySelect.appendChild(option);
+    }
+    countrySelect.value = selectedCountry;
+    countrySelect.addEventListener('change', async () => {
+        const country = JustWatchRegions.normalizeCountry(countrySelect.value);
+        try {
+            await chrome.storage.local.set({ country });
+            updateCountry(country);
+        } catch {
+            countrySelect.value = selectedCountry;
+            showRequestError(popupTitleElement, 'Country could not be saved. Please try again.');
+        }
+    });
+    countryLabel.appendChild(countrySelect);
+    globalPopup.appendChild(countryLabel);
+
+    popupContent = document.createElement('div');
+    popupContent.style.display = 'flex';
+    popupContent.style.flexDirection = 'column';
+    popupContent.style.gap = '8px';
+    popupContent.style.minHeight = '0';
+    popupContent.style.overflowY = 'auto';
+    globalPopup.appendChild(popupContent);
 
     // Add hover events to popup itself
     globalPopup.addEventListener('mouseenter', () => {
@@ -296,7 +359,7 @@ function createGlobalPopup() {
     globalPopup.addEventListener('mouseleave', () => {
         // Hide popup when leaving both title and popup
         setTimeout(() => {
-            if (!currentHoveredTitle) {
+            if (!currentHoveredTitle?.matches(':hover') && !isHoveringPopup()) {
                 hideGlobalPopup();
             }
         }, 50);
@@ -343,8 +406,21 @@ function hideLoadingSpinner() {
     }
 }
 
-function showGlobalPopup(title) {
+function updateCountry(value) {
+    const country = JustWatchRegions.normalizeCountry(value);
+    if (country === selectedCountry) return;
+    selectedCountry = country;
+    countrySelect.value = country;
+    if (popupTitleElement && (currentHoveredTitle === popupTitleElement || isHoveringPopup())) {
+        showGlobalPopup(popupTitleElement, true);
+    } else {
+        hideGlobalPopup();
+    }
+}
+
+function showGlobalPopup(title, keepPosition = false) {
     currentHoveredTitle = title;
+    popupTitleElement = title;
 
     // Position popup at cursor with bottom-left corner at cursor position
     const scrollX = window.scrollX || document.documentElement.scrollLeft;
@@ -354,22 +430,33 @@ function showGlobalPopup(title) {
     const initialLeft = lastCursorPosition.x + scrollX;
     const initialTop = lastCursorPosition.y + scrollY;
 
-    globalPopup.style.left = initialLeft + 'px';
-    globalPopup.style.top = initialTop + 'px';
+    if (!keepPosition) {
+        globalPopup.style.width = 'auto';
+        globalPopup.style.left = initialLeft + 'px';
+        globalPopup.style.top = initialTop + 'px';
+    } else {
+        const bounds = globalPopup.getBoundingClientRect();
+        globalPopup.style.width = bounds.width + 'px';
+        globalPopup._positionInfo.fixedLeft = bounds.left + scrollX;
+        globalPopup._positionInfo.fixedTop = bounds.top + scrollY;
+    }
 
     // Keep popup hidden until content is loaded
-    globalPopup.style.display = "none";
+    globalPopup.style.display = keepPosition ? 'flex' : 'none';
 
     // Store positioning info for later adjustment
-    globalPopup._positionInfo = {
-        cursorX: lastCursorPosition.x,
-        cursorY: lastCursorPosition.y,
-        scrollX,
-        scrollY
-    };
+    if (!keepPosition) {
+        globalPopup._positionInfo = {
+            cursorX: lastCursorPosition.x,
+            cursorY: lastCursorPosition.y,
+            scrollX,
+            scrollY
+        };
+    }
 
     // Clear popup content while waiting for data
-    globalPopup.innerHTML = '';
+    popupContent.textContent = 'Loading streaming options…';
+    if (keepPosition) showLoadingSpinner({ clientX: lastCursorPosition.x, clientY: lastCursorPosition.y });
 
     // Extract movie title under hover
     const movieTitle = extractMovieTitle(title);
@@ -390,7 +477,7 @@ function showGlobalPopup(title) {
         pendingRequest = null;
         showRequestError(title, 'Streaming information is unavailable. Hover again to retry.');
     }, 20000);
-    pendingRequest = { requestId, title, timeout };
+    pendingRequest = { requestId, title, timeout, country: selectedCountry };
 
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -398,7 +485,7 @@ function showGlobalPopup(title) {
                 port = connect();
                 attachPortListeners();
             }
-            port.postMessage({ title: movieTitle, requestId });
+            port.postMessage({ title: movieTitle, requestId, country: selectedCountry });
             return;
         } catch (error) {
             port = null;
@@ -412,18 +499,22 @@ function showGlobalPopup(title) {
 }
 
 function showRequestError(title, message) {
-    if (currentHoveredTitle !== title) return;
+    if (!title || popupTitleElement !== title) return;
+    if (currentHoveredTitle !== title && !isHoveringPopup()) return;
     hideLoadingSpinner();
-    globalPopup.textContent = message;
+    popupContent.textContent = message;
     globalPopup.style.display = "flex";
     adjustPopupPosition();
 }
 
 function hideGlobalPopup() {
     currentHoveredTitle = null;
+    popupTitleElement = null;
+    if (pendingRequest) clearTimeout(pendingRequest.timeout);
+    pendingRequest = null;
     if (globalPopup) {
         globalPopup.style.display = "none";
-        globalPopup.innerHTML = "";
+        popupContent.textContent = '';
     }
     hideLoadingSpinner();
 }
@@ -431,7 +522,7 @@ function hideGlobalPopup() {
 function updateGlobalPopupContent(offers) {
     if (!globalPopup) return;
 
-    globalPopup.innerHTML = "";
+    popupContent.textContent = '';
 
     // Check if there are any offers to display
     let hasOffers = false;
@@ -449,7 +540,7 @@ function updateGlobalPopupContent(offers) {
             const categoryOffers = offer.offers;
             const category = createCategoryNode(categoryName, categoryOffers);
             if (category) {
-                globalPopup.appendChild(category);
+                popupContent.appendChild(category);
             }
         }
 
@@ -457,7 +548,12 @@ function updateGlobalPopupContent(offers) {
         adjustPopupPosition();
     } else {
         // Show a message when no offers are available
-        globalPopup.innerHTML = '<div style="color: #999; font-style: italic; padding: 10px;">No streaming options available</div>';
+        const message = document.createElement('div');
+        message.style.color = '#999';
+        message.style.fontStyle = 'italic';
+        message.style.padding = '10px';
+        message.textContent = 'No streaming options available';
+        popupContent.appendChild(message);
         adjustPopupPosition();
     }
 }
@@ -465,7 +561,7 @@ function updateGlobalPopupContent(offers) {
 function adjustPopupPosition() {
     if (!globalPopup || !globalPopup._positionInfo) return;
 
-    const { cursorX, cursorY, scrollX, scrollY } = globalPopup._positionInfo;
+    const { cursorX, cursorY, scrollX, scrollY, fixedLeft, fixedTop } = globalPopup._positionInfo;
     const popupRect = globalPopup.getBoundingClientRect();
     const viewportHeight = window.innerHeight;
     const viewportWidth = window.innerWidth;
@@ -479,6 +575,9 @@ function adjustPopupPosition() {
     if (cursorY - popupRect.height < 0) {
         newTop = cursorY + scrollY;
     }
+
+    if (fixedLeft !== undefined) newLeft = fixedLeft;
+    if (fixedTop !== undefined) newTop = fixedTop;
 
     // 2. If popup would go below viewport bottom, align bottom at viewport bottom
     const popupBottomY = newTop - scrollY + popupRect.height;

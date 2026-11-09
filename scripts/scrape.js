@@ -1,4 +1,5 @@
 import { parse } from "/lib/parse5.min.js";
+import "./regions.js";
 
 // Establish connection with background script
 let requestCounter = 0;
@@ -21,7 +22,8 @@ chrome.runtime.onConnect.addListener(function (port) {
 
             try {
                 // Fetch document
-                const document = await fetchDocument(msg.title);
+                const country = JustWatchRegions.normalizeCountry(msg.country);
+                const document = await fetchDocument(msg.title, country);
 
                 // Extract offers
                 const offers = await findOffers(document);
@@ -37,7 +39,7 @@ chrome.runtime.onConnect.addListener(function (port) {
                 console.log(`[Request #${requestId}] Sending response to content script...`);
                 console.log(`${'─'.repeat(80)}\n`);
 
-                port.postMessage({ requestId: msg.requestId, offers: offers });
+                port.postMessage({ requestId: msg.requestId, country, offers: offers });
 
             } catch (error) {
                 const requestDuration = performance.now() - requestStart;
@@ -69,9 +71,8 @@ chrome.runtime.onConnect.addListener(function (port) {
     });
 });
 
-async function fetchDocument(title) {
-    const encodedTitle = encodeURIComponent(title.toLowerCase());
-    const url = `https://www.justwatch.com/ca/search/?q=${encodedTitle}`;
+async function fetchDocument(title, country) {
+    const url = JustWatchRegions.searchUrl(title, country);
 
     console.log(`[Fetch] ${url}`);
 
@@ -121,7 +122,7 @@ async function findOffers(document) {
     if (!offersNode) {
         const results = findTagWithClass(document, "search-content");
         const count = findTagWithClass(results, "title-list-options__box-left");
-        if (!firstResult && count && /\b0 titles\b/.test(getTextContent(count))) {
+        if (!firstResult && count && /^\s*0(?:\s|$)/.test(getTextContent(count))) {
             return ["stream", "rent", "buy"].map(categoryName => ({ categoryName, offers: [] }));
         }
         throw new Error('JustWatch offers could not be read');

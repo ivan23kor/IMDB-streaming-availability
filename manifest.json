@@ -1,7 +1,7 @@
 {
   "name": "Just Watch IMDB",
   "description": "Instantly see streaming availability from JustWatch directly on IMDb pages!",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "manifest_version": 3,
   "icons": {
     "16": "assets/logo-16.png",
@@ -12,6 +12,7 @@
   "content_scripts": [
     {
       "js": [
+        "scripts/regions.js",
         "scripts/content.js"
       ],
       "matches": [
@@ -24,7 +25,8 @@
     "type": "module"
   },
   "host_permissions": [
-    "https://www.justwatch.com/*"
+    "https://www.justwatch.com/*",
+    "https://br.justwatch.com/*"
   ],
   "web_accessible_resources": [
     {
@@ -35,5 +37,8 @@
         "https://www.imdb.com/*"
       ]
     }
+  ],
+  "permissions": [
+    "storage"
   ]
 }
