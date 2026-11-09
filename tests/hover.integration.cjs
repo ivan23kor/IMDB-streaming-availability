@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { mkdtemp, rm } = require('node:fs/promises');
+const { mkdtemp, rm, readFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const { chromium } = require('playwright');
@@ -13,6 +13,7 @@ test('hover survives delayed rows, replacement, stale replies and worker restart
     const context = await chromium.launchPersistentContext(profile, {
         headless: true,
         channel: 'chromium',
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
         executablePath: process.env.CHROME_PATH,
         args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--no-sandbox'],
     });
@@ -27,7 +28,7 @@ test('hover survives delayed rows, replacement, stale replies and worker restart
         await context.route('https://www.justwatch.com/**', async route => {
             requests.push(route.request().url());
             await new Promise(resolve => releases.push(resolve));
-            await route.fulfill({ contentType: 'text/html', body: '<html></html>' });
+            await route.fulfill({ contentType: 'text/html', body: await readFile(join(__dirname, 'fixtures/justwatch-shawshank.html'), 'utf8') });
         });
         const page = await context.newPage();
         const errors = [];
@@ -55,7 +56,7 @@ test('hover survives delayed rows, replacement, stale replies and worker restart
         await firstReply;
         assert.equal(await spinner.isVisible(), true);
         releases.shift()();
-        await page.getByText('No streaming options available', { exact: true }).waitFor();
+        await page.locator('.global-offers-popup img[alt="Amazon Prime Video"]').waitFor({ state: 'visible' });
         await spinner.waitFor({ state: 'hidden' });
         await page.getByRole('heading', { name: 'Top 250', exact: true }).hover();
         const cdp = await context.newCDPSession(page);
@@ -65,14 +66,68 @@ test('hover survives delayed rows, replacement, stale replies and worker restart
         await spinner.waitFor({ state: 'visible' });
         await waitForRequests(3);
         releases.shift()();
-        await page.getByText('No streaming options available', { exact: true }).waitFor();
+        await page.locator('.global-offers-popup img[alt="Amazon Prime Video"]').waitFor({ state: 'visible' });
         await page.getByRole('heading', { name: 'Top 250', exact: true }).hover();
         await page.getByRole('heading', { name: '1. The Godfather', exact: true }).hover();
         await waitForRequests(4);
         await page.getByText('Streaming information is unavailable. Hover again to retry.', { exact: true }).waitFor({ timeout: 25000 });
         await spinner.waitFor({ state: 'hidden' });
         releases.shift()();
+        for (const response of [
+            { status: 503, body: '<html>Unavailable</html>', expected: 'Streaming information is unavailable. Hover again to retry.' },
+            { status: 200, body: '<html>Changed page structure</html>', expected: 'Streaming information is unavailable. Hover again to retry.' },
+            { status: 200, body: '<html><section class="inline buybox__content"></section></html>', expected: 'No streaming options available' },
+            { status: 200, body: '<html><div class="title-list-row"><section class="inline buybox__content"><div class="rent inline buybox-row extra"><div class="buybox-row__offers"><a class="offer" href="https://example.com/rent"><img alt="Rental provider" src="https://example.com/icon.png"><span>CA$ 4.99</span></a></div></div></section></div></html>', expected: 'CA$ 4.99' }
+        ]) {
+            await context.unroute('https://www.justwatch.com/**');
+            await context.route('https://www.justwatch.com/**', route => route.fulfill({ status: response.status, contentType: 'text/html', body: response.body }));
+            await page.getByRole('heading', { name: 'Top 250', exact: true }).hover();
+            await page.getByRole('heading', { name: '1. The Godfather', exact: true }).hover();
+            await page.getByText(response.expected, { exact: true }).waitFor();
+        }
         assert.deepEqual(errors, []);
+    } finally {
+        await context.close();
+        await rm(profile, { recursive: true, force: true });
+    }
+});
+
+test('real JustWatch lookups return providers, prices and links', { skip: !process.env.LIVE_JUSTWATCH }, async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'imdb-live-'));
+    const extension = resolve(__dirname, '..');
+    const context = await chromium.launchPersistentContext(profile, {
+        headless: true,
+        channel: 'chromium',
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        executablePath: process.env.CHROME_PATH,
+        args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--no-sandbox'],
+    });
+    context.setDefaultTimeout(25000);
+    try {
+        await context.route('https://www.imdb.com/**', route => route.fulfill({
+            contentType: 'text/html',
+            body: '<html><body><h1>Top 250</h1><ul></ul></body></html>',
+        }));
+        const page = await context.newPage();
+        await page.goto('https://www.imdb.com/chart/top/');
+        await page.locator('.global-offers-popup').waitFor({ state: 'attached' });
+        for (const [title, year] of [['The Shawshank Redemption', '1994'], ['The Godfather', '1972'], ['The Dark Knight', '2008']]) {
+            await page.mouse.move(0, 0);
+            await page.locator('ul').evaluate((list, html) => list.innerHTML = html, row(title).replace('1994', year));
+            await page.getByRole('heading', { name: new RegExp(title) }).first().hover();
+            const popup = page.locator('.global-offers-popup');
+            await popup.locator('a img').first().waitFor({ state: 'visible' });
+            const offers = await popup.locator('a').evaluateAll(links => links.map(link => ({
+                name: link.querySelector('img').alt,
+                url: link.href,
+                price: link.textContent.trim()
+            })));
+            if (process.env.REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.REVIEW_SCREENSHOT });
+            assert.ok(offers.length > 0);
+            assert.ok(offers.every(offer => offer.name !== 'JustWatch'));
+            assert.ok(offers.every(offer => offer.name && offer.price && /^https:\/\//.test(offer.url)));
+            console.log(title, JSON.stringify(offers.map(({ name, price }) => ({ name, price }))));
+        }
     } finally {
         await context.close();
         await rm(profile, { recursive: true, force: true });

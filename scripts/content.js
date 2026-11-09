@@ -109,6 +109,10 @@ function attachPortListeners() {
         clearTimeout(request.timeout);
         pendingRequest = null;
         if (currentHoveredTitle !== request.title) return;
+        if (msg.error) {
+            showRequestError(request.title, msg.error);
+            return;
+        }
         hideLoadingSpinner();
         updateGlobalPopupContent(msg.offers);
         globalPopup.style.display = "flex";

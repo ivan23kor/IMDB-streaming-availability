@@ -1,25 +1,4 @@
-import { parse, serialize } from "/lib/parse5.min.js";
-
-// Keep service worker alive
-let keepAliveInterval;
-
-function startKeepAlive() {
-    // Ping every 20 seconds to prevent service worker from being killed
-    keepAliveInterval = setInterval(() => {
-        console.log('[Service Worker] ⏰ Keepalive ping');
-    }, 20000);
-}
-
-function stopKeepAlive() {
-    if (keepAliveInterval) {
-        clearInterval(keepAliveInterval);
-        keepAliveInterval = null;
-    }
-}
-
-// Start keepalive on service worker startup
-startKeepAlive();
-console.log('[Service Worker] 🚀 Service worker started, keepalive activated');
+import { parse } from "/lib/parse5.min.js";
 
 // Establish connection with background script
 let requestCounter = 0;
@@ -68,17 +47,12 @@ chrome.runtime.onConnect.addListener(function (port) {
                 console.error(`[Request #${requestId}] Error: ${error.message}`);
                 console.error(`[Request #${requestId}] Stack:`, error.stack);
                 console.error(`[Request #${requestId}] Duration: ${requestDuration.toFixed(2)}ms`);
-                console.log(`[Request #${requestId}] Sending empty offers response...`);
+                console.log(`[Request #${requestId}] Sending lookup error response...`);
                 console.log(`${'─'.repeat(80)}\n`);
 
-                // Send empty offers on error
                 port.postMessage({
                     requestId: msg.requestId,
-                    offers: [
-                        { categoryName: "stream", offers: [] },
-                        { categoryName: "rent", offers: [] },
-                        { categoryName: "buy", offers: [] }
-                    ]
+                    error: 'Streaming information is unavailable. Hover again to retry.'
                 });
             }
         }
@@ -101,31 +75,9 @@ async function fetchDocument(title) {
 
     console.log(`[Fetch] ${url}`);
 
-    try {
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const html = await response.text();
-        const document = await parse(html);
-
-        return document;
-    } catch (error) {
-        console.error(`[Fetch] ✗ Failed:`, error.message);
-
-        // Fallback to sample data if fetch fails
-        try {
-            const html = await (await fetch('/jw_sample_page.html')).text();
-            const document = await parse(html);
-            console.log(`[Fetch] Using fallback sample data`);
-            return document;
-        } catch (fallbackError) {
-            console.error('[Fetch] ✗ Fallback also failed:', fallbackError);
-            throw fallbackError;
-        }
-    }
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`JustWatch HTTP ${response.status}`);
+    return parse(await response.text());
 }
 
 function findOffersInCategory(offersNode, categoryName) {
@@ -141,8 +93,9 @@ function findOffersInCategory(offersNode, categoryName) {
 
     let result = [];
     for (const link of offerLinks) {
+        if (!link.attrs?.some(attr => attr.name === "class" && attr.value.split(/\s+/).includes("offer"))) continue;
         try {
-            const price = getFirstText(link);
+            const price = getFirstText(link).trim() || "Available";
             const url = link.attrs.find(attr => attr.name === "href").value;
             const image = findTags(link, "img")[0];
             const name = image.attrs.find(attr => attr.name === "alt").value
@@ -163,67 +116,13 @@ function findOffersInCategory(offersNode, categoryName) {
 }
 
 async function findOffers(document) {
-    const offersNode = findTagWithClass(document, "buybox__content inline");
-
-    if (!offersNode) {
-        console.error('[Scrape] ✗ Could not find "buybox__content inline" node - search may have no results');
-        return [
-            { categoryName: "stream", offers: [] },
-            { categoryName: "rent", offers: [] },
-            { categoryName: "buy", offers: [] }
-        ];
-    }
-
-    // Check if this is a search results page or a movie detail page
-    const testCategoryNode = findTagWithClass(offersNode, "buybox-row stream inline");
-    if (!testCategoryNode) {
-        // This is a search results page - extract first result and fetch its detail page
-        const firstResultLink = extractFirstSearchResultUrl(document);
-
-        if (!firstResultLink) {
-            console.error('[Scrape] ✗ No movie links found in search results');
-            return [
-                { categoryName: "stream", offers: [] },
-                { categoryName: "rent", offers: [] },
-                { categoryName: "buy", offers: [] }
-            ];
-        }
-
-        // Fetch the movie detail page
-        try {
-            const movieUrl = `https://www.justwatch.com${firstResultLink}`;
-            console.log('[Scrape] Redirecting to movie page:', movieUrl);
-
-            const movieResponse = await fetch(movieUrl);
-            if (!movieResponse.ok) {
-                throw new Error(`HTTP ${movieResponse.status}: ${movieResponse.statusText}`);
-            }
-
-            const movieHtml = await movieResponse.text();
-            const movieDocument = await parse(movieHtml);
-
-            return findOffersFromDocument(movieDocument);
-
-        } catch (error) {
-            console.error('[Scrape] ✗ Failed to fetch movie detail page:', error.message);
-            return [
-                { categoryName: "stream", offers: [] },
-                { categoryName: "rent", offers: [] },
-                { categoryName: "buy", offers: [] }
-            ];
-        }
-    }
-
-    // This is a legacy movie detail page with buybox-row structure
-    const stream = findOffersInCategory(offersNode, "stream");
-    const rent = findOffersInCategory(offersNode, "rent");
-    const buy = findOffersInCategory(offersNode, "buy");
-
-    return [
-        { categoryName: "stream", offers: stream },
-        { categoryName: "rent", offers: rent },
-        { categoryName: "buy", offers: buy }
-    ];
+    const firstResult = findTagWithClass(document, "title-list-row");
+    const offersNode = findTagWithClass(firstResult || document, "buybox__content");
+    if (!offersNode) throw new Error('JustWatch offers could not be read');
+    return ["stream", "rent", "buy"].map(categoryName => ({
+        categoryName,
+        offers: findOffersInCategory(offersNode, categoryName)
+    }));
 }
 
 // Extract offers from a document (movie detail page only)
@@ -381,7 +280,7 @@ function findTagWithClass(node, name) {
     // Check if current node matches
     if (node.attrs && Array.isArray(node.attrs)) {
         const matchingAttr = node.attrs.find(attr =>
-            attr.name === "class" && attr.value === name
+            attr.name === "class" && name.split(/\s+/).every(value => attr.value.split(/\s+/).includes(value))
         );
         if (matchingAttr) {
             return node;
