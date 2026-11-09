@@ -118,7 +118,14 @@ function findOffersInCategory(offersNode, categoryName) {
 async function findOffers(document) {
     const firstResult = findTagWithClass(document, "title-list-row");
     const offersNode = findTagWithClass(firstResult || document, "buybox__content");
-    if (!offersNode) throw new Error('JustWatch offers could not be read');
+    if (!offersNode) {
+        const results = findTagWithClass(document, "search-content");
+        const count = findTagWithClass(results, "title-list-options__box-left");
+        if (!firstResult && count && /\b0 titles\b/.test(getTextContent(count))) {
+            return ["stream", "rent", "buy"].map(categoryName => ({ categoryName, offers: [] }));
+        }
+        throw new Error('JustWatch offers could not be read');
+    }
     return ["stream", "rent", "buy"].map(categoryName => ({
         categoryName,
         offers: findOffersInCategory(offersNode, categoryName)
@@ -323,6 +330,12 @@ function findTags(node, name) {
     }
 
     return node.childNodes.map(childNode => findTags(childNode, name)).flat();
+}
+
+function getTextContent(node) {
+    if (!node) return '';
+    if (node.nodeName === '#text') return node.value;
+    return (node.childNodes || []).map(getTextContent).join(' ');
 }
 
 function getFirstText(node) {

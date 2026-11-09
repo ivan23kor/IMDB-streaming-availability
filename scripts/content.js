@@ -74,14 +74,6 @@ const SELECTOR_CONFIGS = [
         removeNumberPrefix: false
     },
     {
-        // Interest/Genre pages - fallback for more generic structure
-        name: 'interest-fallback',
-        container: 'div > div > div:has(a[href*="/title/"])',
-        title: 'a[href*="/title/"]',
-        year: null,
-        removeNumberPrefix: false
-    },
-    {
         // Legacy structure (older IMDB pages)
         name: 'legacy',
         container: 'td.titleColumn',
@@ -168,7 +160,7 @@ function findMovieElement(target) {
         const title = target.closest(config.container);
         if (!title || !title.querySelector('a[href*="/title/tt"]')) continue;
         title._selectorConfig = config;
-        return title;
+        if (extractMovieTitle(title)) return title;
     }
     const link = target.closest('a[href*="/title/tt"]');
     const title = link?.closest('div, section, li, article');
@@ -178,97 +170,36 @@ function findMovieElement(target) {
         year: null,
         removeNumberPrefix: false
     };
-    return title;
+    return extractMovieTitle(title) ? title : null;
 }
 
 function extractMovieTitle(titleElement) {
-    // Get the selector config stored on the element
     const config = titleElement._selectorConfig;
-    if (!config) {
-        console.error('Just Watch IMDB: No selector config found on element');
-        return null;
-    }
+    if (!config) return null;
 
     try {
-        // Try multiple title selectors as fallbacks
         const titleSelectors = [
             config.title,
             'a.ipc-title-link-wrapper',
-            'a[href*="/title/"]',
             '.ipc-title__text',
-            'h3',
-            'a',
             '[data-testid="pct-c-item-title"]',
             '.ipc-poster-card-title',
-            '.ipc-lockup-overlay-title'
+            '.ipc-lockup-overlay-title',
+            'a[href*="/title/tt"]'
         ];
-
-        let titleNode = null;
-
-        for (const selector of titleSelectors) {
-            titleNode = titleElement.querySelector(selector);
-            if (titleNode) {
-                break;
-            }
-        }
-
         let movieTitle = '';
-
-        // Additional fallback for poster cards: try to find title in nested elements
-        if (!titleNode && titleElement.classList.contains('ipc-poster-card')) {
-            console.log('Just Watch IMDB: Trying to extract title from poster card:', titleElement);
-
-            // For poster cards, the title might be in a different location
-            const nestedTitle = titleElement.querySelector('[data-testid="title"]') ||
-                titleElement.querySelector('div[title]') ||
-                titleElement.querySelector('span[title]') ||
-                titleElement.querySelector('.ipc-lockup-overlay') ||
-                titleElement.querySelector('a[href*="/title/"]');
-
-            if (nestedTitle) {
-                // Try to get title from the title attribute or text content
-                if (nestedTitle.getAttribute('title')) {
-                    movieTitle = nestedTitle.getAttribute('title').trim();
-                    console.log('Just Watch IMDB: Found title in title attribute:', movieTitle);
-                } else if (nestedTitle.textContent) {
-                    movieTitle = nestedTitle.textContent.trim();
-                    console.log('Just Watch IMDB: Found title in text content:', movieTitle);
-                } else {
-                    // Look for title in nested elements
-                    const nestedTitleElement = nestedTitle.querySelector('[title], .ipc-lockup-overlay-title, span');
-                    if (nestedTitleElement && nestedTitleElement.getAttribute('title')) {
-                        movieTitle = nestedTitleElement.getAttribute('title').trim();
-                        console.log('Just Watch IMDB: Found title in nested element:', movieTitle);
-                    }
-                }
+        for (const selector of titleSelectors) {
+            for (const candidate of titleElement.querySelectorAll(selector)) {
+                if (candidate.closest('button, [role="button"]')) continue;
+                const link = candidate.closest('a[href*="/title/tt"]') || candidate.querySelector('a[href*="/title/tt"]');
+                if (!link && !candidate.matches('.ipc-title__text, [data-testid="pct-c-item-title"], .ipc-poster-card-title, .ipc-lockup-overlay-title')) continue;
+                movieTitle = (candidate.innerText || candidate.textContent || '').trim();
+                if (!movieTitle) movieTitle = (candidate.getAttribute('title') || link?.getAttribute('title') || '').trim();
+                if (movieTitle) break;
             }
-
-            // Last resort: try to find any element with a title attribute that looks like a movie title
-            if (!movieTitle) {
-                const titledElements = titleElement.querySelectorAll('[title]');
-                for (const element of titledElements) {
-                    const title = element.getAttribute('title');
-                    if (title && title.length > 2 && !title.includes('Watch') && !title.includes('Rate')) {
-                        movieTitle = title.trim();
-                        console.log('Just Watch IMDB: Found title in generic title attribute:', movieTitle);
-                        break;
-                    }
-                }
-            }
+            if (movieTitle) break;
         }
-
-        if (!titleNode && !movieTitle) {
-            return null;
-        }
-
-        // If we didn't get title from poster card fallback, get it from titleNode
-        if (!movieTitle && titleNode) {
-            movieTitle = (titleNode.innerText || titleNode.textContent || '').trim();
-        }
-        if (!movieTitle) {
-            console.warn('Just Watch IMDB: No title found in element:', titleElement);
-            return null;
-        }
+        if (!movieTitle) return null;
 
         // Remove number prefix if configured (e.g., "1. The Shawshank Redemption" -> "The Shawshank Redemption")
         if (config.removeNumberPrefix) {
@@ -277,8 +208,8 @@ function extractMovieTitle(titleElement) {
 
         // Remove genre keywords FIRST (before year extraction)
         // Common genres found in IMDB upcoming releases - they appear AFTER the year like "Movie (2025) Action"
-        const genrePattern = /\s+(Action|Adventure|Animation|Biography|Comedy|Crime|Documentary|Drama|Family|Fantasy|Film-Noir|History|Horror|Music|Musical|Mystery|Romance|Sci-Fi|Short|Sport|Thriller|War|Western)(\s+\w+)*$/;
-        movieTitle = movieTitle.replace(genrePattern, '').trim();
+        const genrePattern = /(\(\d{4}\))\s+(Action|Adventure|Animation|Biography|Comedy|Crime|Documentary|Drama|Family|Fantasy|Film-Noir|History|Horror|Music|Musical|Mystery|Romance|Sci-Fi|Short|Sport|Thriller|War|Western)(\s+\w+)*$/;
+        movieTitle = movieTitle.replace(genrePattern, '$1').trim();
 
         let year = '';
 
@@ -304,6 +235,7 @@ function extractMovieTitle(titleElement) {
             const yearSelectors = [
                 config.year,
                 '.cli-title-metadata-item',
+                '.cli-title-metadata .ipc-inline-list__item',
                 '.ipc-metadata-list-summary-item__li:first-child',
                 '.secondaryInfo',
                 'span.sc-5f7fb5b4-8'
@@ -312,11 +244,11 @@ function extractMovieTitle(titleElement) {
             for (const selector of yearSelectors) {
                 const yearNode = titleElement.querySelector(selector);
                 if (yearNode) {
-                    year = yearNode.innerText || yearNode.textContent;
+                    let yearText = yearNode.innerText || yearNode.textContent;
                     // Clean year text (remove parentheses, extract just the year)
-                    year = year.replace(/[()]/g, '').trim();
+                    yearText = yearText.replace(/[()]/g, '').trim();
                     // Extract 4-digit year if embedded in other text
-                    const yearMatch = year.match(/\b(19|20)\d{2}\b/);
+                    const yearMatch = yearText.match(/\b(19|20)\d{2}\b/);
                     if (yearMatch) {
                         year = yearMatch[0];
                         break;
@@ -444,7 +376,7 @@ function showGlobalPopup(title) {
 
     // If title extraction failed, abort
     if (!movieTitle) {
-        console.warn('Just Watch IMDB: Title extraction failed for element:', title);
+        currentHoveredTitle = null;
         hideLoadingSpinner();
         return;
     }
