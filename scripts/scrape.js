@@ -58,7 +58,7 @@ chrome.runtime.onConnect.addListener(function (port) {
                 console.log(`[Request #${requestId}] Sending response to content script...`);
                 console.log(`${'─'.repeat(80)}\n`);
 
-                port.postMessage({ offers: offers });
+                port.postMessage({ requestId: msg.requestId, offers: offers });
 
             } catch (error) {
                 const requestDuration = performance.now() - requestStart;
@@ -73,6 +73,7 @@ chrome.runtime.onConnect.addListener(function (port) {
 
                 // Send empty offers on error
                 port.postMessage({
+                    requestId: msg.requestId,
                     offers: [
                         { categoryName: "stream", offers: [] },
                         { categoryName: "rent", offers: [] },

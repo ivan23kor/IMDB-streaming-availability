@@ -1,0 +1,6 @@
+{
+  "name": "just-watch-imdb",
+  "private": true,
+  "scripts": { "test:integration": "node --test tests/hover.integration.cjs" },
+  "devDependencies": { "playwright": "1.65.0" }
+}

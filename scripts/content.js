@@ -2,6 +2,8 @@
 let globalPopup = null;
 let currentHoveredTitle = null;
 let port = null;
+let pendingRequest = null;
+let requestCounter = 0;
 let loadingSpinner = null;
 let lastCursorPosition = { x: 0, y: 0 };
 
@@ -100,128 +102,79 @@ function connect() {
 }
 
 function attachPortListeners() {
-    if (!port) return;
-
-    port.onDisconnect.addListener(() => {
-        console.log("Just Watch IMDB: Service worker port disconnected. Reconnecting...");
-
-        // Check if it's a context invalidation (extension reload/update)
-        if (chrome.runtime?.id) {
-            // Extension context is still valid, safe to reconnect
-            try {
-                port = connect();
-                attachPortListeners();
-                console.log("Just Watch IMDB: Successfully reconnected to service worker");
-            } catch (error) {
-                console.error("Just Watch IMDB: Failed to reconnect:", error.message);
-                port = null;
-            }
-        } else {
-            // Extension context invalidated - extension was reloaded
-            console.warn("Just Watch IMDB: Extension context invalidated. Page needs refresh.");
-            port = null;
-        }
+    const connectedPort = port;
+    connectedPort.onMessage.addListener((msg) => {
+        if (!pendingRequest || msg.requestId !== pendingRequest.requestId) return;
+        const request = pendingRequest;
+        clearTimeout(request.timeout);
+        pendingRequest = null;
+        if (currentHoveredTitle !== request.title) return;
+        hideLoadingSpinner();
+        updateGlobalPopupContent(msg.offers);
+        globalPopup.style.display = "flex";
+        adjustPopupPosition();
+    });
+    connectedPort.onDisconnect.addListener(() => {
+        if (port !== connectedPort) return;
+        port = null;
+        if (!pendingRequest) return;
+        const title = pendingRequest.title;
+        clearTimeout(pendingRequest.timeout);
+        pendingRequest = null;
+        showRequestError(title, 'Streaming connection closed. Hover again to retry.');
     });
 }
 
 function afterDOMLoaded() {
-    port = connect();
-    attachPortListeners();
-
     // Create the global popup once
     createGlobalPopup();
 
     // Create loading spinner
     createLoadingSpinner();
 
-    // Try each selector configuration until we find movie elements
-    let titles = [];
-    let activeConfig = null;
-
-    for (const config of SELECTOR_CONFIGS) {
-        const elements = document.querySelectorAll(config.container);
-        if (elements.length > 0) {
-            console.log(`Just Watch IMDB: Found ${elements.length} elements using '${config.name}' selector (${config.container})`);
-            titles = elements;
-            activeConfig = config;
-            break;
-        }
-    }
-
-    // Additional fallback: try to find any movie title links directly
-    if (titles.length === 0) {
-        const movieLinks = document.querySelectorAll('a[href*="/title/tt"]');
-        if (movieLinks.length > 0) {
-            console.log(`Just Watch IMDB: Found ${movieLinks.length} movie title links as fallback`);
-            // Group movie links by their common container
-            const containers = new Set();
-            movieLinks.forEach(link => {
-                let container = link.closest('div, section, li, article');
-                if (container) {
-                    containers.add(container);
-                }
-            });
-            titles = Array.from(containers);
-            activeConfig = {
-                name: 'fallback-direct',
-                container: null, // We'll use the found containers directly
-                title: 'a[href*="/title/"]',
-                year: null,
-                removeNumberPrefix: false
-            };
-        }
-    }
-
-    if (titles.length === 0) {
-        console.log('Just Watch IMDB: No movie elements found on this page');
-        return;
-    }
-
-    // Attach event listeners to all found movie title elements
-    let attachedCount = 0;
-    for (const title of titles) {
-        // Store the config on the element for later use
-        title._selectorConfig = activeConfig;
-
-        // Quick validation - check if this element actually has a movie link
-        const anyLink = title.querySelector('a[href*="/title/"]');
-        if (!anyLink) {
-            continue;
-        }
-
-        title.addEventListener('mouseenter', (event) => {
-            lastCursorPosition = { x: event.clientX, y: event.clientY };
-            showLoadingSpinner(event);
-            showGlobalPopup(title);
-        });
-        title.addEventListener('mousemove', (event) => {
-            lastCursorPosition = { x: event.clientX, y: event.clientY };
-            moveLoadingSpinner(event);
-        });
-        title.addEventListener('mouseleave', (event) => {
-            hideLoadingSpinner();
-            // Clear current hovered title
-            if (currentHoveredTitle === title) {
-                currentHoveredTitle = null;
-            }
-
-            // Small delay to allow moving to popup or another title
-            setTimeout(() => {
-                if (!currentHoveredTitle && !isHoveringPopup()) {
-                    hideGlobalPopup();
-                }
-            }, 100);
-        });
-        attachedCount++;
-    }
-
-    console.log(`Just Watch IMDB: Attached event listeners to ${attachedCount} of ${titles.length} elements`);
-
-    // Hide popup when mouse leaves the page area
-    document.addEventListener('mouseleave', () => {
-        hideLoadingSpinner();
-        hideGlobalPopup();
+    document.addEventListener('mouseover', (event) => {
+        const title = findMovieElement(event.target);
+        if (!title || title.contains(event.relatedTarget)) return;
+        lastCursorPosition = { x: event.clientX, y: event.clientY };
+        showLoadingSpinner(event);
+        showGlobalPopup(title);
     });
+
+    document.addEventListener('mousemove', (event) => {
+        lastCursorPosition = { x: event.clientX, y: event.clientY };
+        moveLoadingSpinner(event);
+    });
+
+    document.addEventListener('mouseout', (event) => {
+        const title = currentHoveredTitle;
+        if (!title || !title.contains(event.target) || title.contains(event.relatedTarget)) return;
+        hideLoadingSpinner();
+        currentHoveredTitle = null;
+        setTimeout(() => {
+            if (!currentHoveredTitle && !isHoveringPopup()) hideGlobalPopup();
+        }, 100);
+    });
+
+    document.addEventListener('mouseleave', hideGlobalPopup);
+}
+
+function findMovieElement(target) {
+    if (!(target instanceof Element) || globalPopup?.contains(target)) return null;
+    for (const config of SELECTOR_CONFIGS) {
+        const title = target.closest(config.container);
+        if (!title || !title.querySelector('a[href*="/title/tt"]')) continue;
+        title._selectorConfig = config;
+        return title;
+    }
+    const link = target.closest('a[href*="/title/tt"]');
+    const title = link?.closest('div, section, li, article');
+    if (!title) return null;
+    title._selectorConfig = {
+        title: 'a[href*="/title/"]',
+        year: null,
+        removeNumberPrefix: false
+    };
+    return title;
 }
 
 function extractMovieTitle(titleElement) {
@@ -494,65 +447,40 @@ function showGlobalPopup(title) {
 
     console.log('Just Watch IMDB: Extracted title:', movieTitle, '- sending to background script');
 
-    // Send a request to background script for this movie title
-    try {
-        // Check if port is still connected before sending
-        if (!port) {
-            console.log('Just Watch IMDB: Port not connected, reconnecting...');
+    if (pendingRequest) clearTimeout(pendingRequest.timeout);
+    const requestId = ++requestCounter;
+    const timeout = setTimeout(() => {
+        if (pendingRequest?.requestId !== requestId) return;
+        pendingRequest = null;
+        showRequestError(title, 'Streaming information is unavailable. Hover again to retry.');
+    }, 20000);
+    pendingRequest = { requestId, title, timeout };
 
-            // Check if extension context is valid
-            if (!chrome.runtime?.id) {
-                console.error('Just Watch IMDB: Extension context invalidated. Cannot reconnect.');
-                hideLoadingSpinner();
-                globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
-                globalPopup.style.display = "flex";
-                return;
-            }
-
-            port = chrome.runtime.connect({ name: "port" });
-            attachPortListeners();
-        }
-
-        port.postMessage({ title: movieTitle });
-    } catch (error) {
-        console.error('Just Watch IMDB: Failed to send message:', error.message);
-
-        // Check for context invalidation
-        if (!chrome.runtime?.id) {
-            console.error('Just Watch IMDB: Extension context invalidated.');
-            hideLoadingSpinner();
-            globalPopup.innerHTML = '<div style="color: #ff6b6b; padding: 10px;">Extension needs reload - refresh page</div>';
-            globalPopup.style.display = "flex";
-            return;
-        }
-
-        // Try to reconnect and send again
+    for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            console.log('Just Watch IMDB: Attempting reconnect...');
-            port = chrome.runtime.connect({ name: "port" });
-            attachPortListeners();
-            port.postMessage({ title: movieTitle });
-        } catch (retryError) {
-            console.error('Just Watch IMDB: Failed to reconnect:', retryError.message);
-            hideLoadingSpinner();
+            if (!port) {
+                port = connect();
+                attachPortListeners();
+            }
+            port.postMessage({ title: movieTitle, requestId });
             return;
+        } catch (error) {
+            port = null;
         }
     }
+    clearTimeout(timeout);
+    pendingRequest = null;
+    showRequestError(title, chrome.runtime?.id
+        ? 'Streaming information is unavailable. Hover again to retry.'
+        : 'Extension was updated. Refresh this page.');
+}
 
-    // Create streaming icons based on received data from background script
-    const handleMessage = function (msg) {
-        if (currentHoveredTitle === title) {
-            hideLoadingSpinner(); // Hide the cursor-following spinner
-            updateGlobalPopupContent(msg.offers);
-            // Show popup only after content is loaded
-            globalPopup.style.display = "flex";
-            // Adjust position after showing popup
-            adjustPopupPosition();
-        }
-        // Remove the event listener after handling the message
-        port.onMessage.removeListener(handleMessage);
-    };
-    port.onMessage.addListener(handleMessage);
+function showRequestError(title, message) {
+    if (currentHoveredTitle !== title) return;
+    hideLoadingSpinner();
+    globalPopup.textContent = message;
+    globalPopup.style.display = "flex";
+    adjustPopupPosition();
 }
 
 function hideGlobalPopup() {
